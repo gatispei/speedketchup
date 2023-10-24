@@ -64,6 +64,11 @@ impl From<std::time::SystemTimeError> for ErrorString {
         ErrorString(err.to_string())
     }
 }
+impl From<std::boxed::Box<dyn std::any::Any + std::marker::Send>> for ErrorString {
+    fn from(_err: std::boxed::Box<dyn std::any::Any + std::marker::Send>) -> ErrorString {
+        ErrorString("thread panciked".to_string())
+    }
+}
 
 #[derive(Debug)]
 struct SpeedtestResult {
@@ -131,18 +136,54 @@ struct SpeedTestServer {
     latency: u32,
 }
 
+#[allow(dead_code)]
+fn type_of<T>(_: &T) -> &'static str {
+    return std::any::type_name::<T>();
+}
+
+fn timestr() -> String {
+    let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    format!("{}.{:0>3}: ",
+	    libc_strftime::strftime_local("%Y.%m.%d-%H:%M:%S", d.as_secs() as i64),
+	    d.subsec_millis())
+}
+
+macro_rules! pr {
+    ($($arg:tt)*) => {{
+	print!("{}: ", timestr());
+	println!($($arg)*);
+    }};
+}
+
 fn duration<F, T>(work: F) -> Result<u32, ErrorString> where
     F: Fn() -> Result<T, ErrorString> {
-    let start_time = std::time::SystemTime::now();
+    let now = std::time::Instant::now();
     let _ = work()?;
-    Ok(std::time::SystemTime::now().duration_since(start_time)?.as_millis() as u32)
+    Ok(now.elapsed().as_millis() as u32)
+}
+
+fn get_url_latency(url: &str) -> Result<u32, ErrorString> {
+    let latencies: Vec<_> = (0..3).filter_map(
+	|_i|
+	duration(|| {
+	    Ok(ureq::get(&url).call()?)
+	}).ok()
+    )
+	.collect();
+    let mut lat = u32::MAX;
+    if latencies.len() > 0 {
+	lat = latencies.iter().sum::<u32>() / latencies.len() as u32;
+    }
+    pr!("check {}: {:?} / {}", url, lat, latencies.len());
+    Ok(lat)
 }
 
 fn download_configuration() -> Result<SpeedtestResult, ErrorString> {
+    pr!("download_configuration");
     let config_xml: String = ureq::get("http://www.speedtest.net/speedtest-config.php")
         .call()?.into_string()?;
     let config = roxmltree::Document::parse(&config_xml)?;
-//    println!("config: {:?}", config);
+    pr!("config_xml.len(): {:?}", config_xml.len());
 
     let server_config_node = config.descendants()
         .find(|n| n.has_tag_name("server-config"))
@@ -225,29 +266,28 @@ fn download_configuration() -> Result<SpeedtestResult, ErrorString> {
     let servers_xml: String = ureq::get("http://www.speedtest.net/speedtest-servers.php")
         .call()?.into_string()?;
     let servers = roxmltree::Document::parse(&servers_xml)?;
-//    println!("servers: {:?}", servers);
+    pr!("servers_xml.len(): {:?}", servers_xml.len());
     let mut servers: Vec<_> = servers
         .descendants()
         .filter(|node| node.tag_name().name() == "server")
-        .map::<Result<_, ErrorString>, _>(|n| {
+        .filter_map(|n| {
             let lll: Point = Point {
-                x: n.attribute("lat").ok_or("no lat")?.parse()?,
-                y: n.attribute("lon").ok_or("no lon")?.parse()?,
+                x: n.attribute("lat")?.parse().ok()?,
+                y: n.attribute("lon")?.parse().ok()?,
             };
-            let country = n.attribute("country").ok_or("bad country")?;
-            let name = n.attribute("name").ok_or("bad name")?;
-	    let sponsor = n.attribute("sponsor").ok_or("bad sponsor")?;
-            Ok(SpeedTestServer {
+            let country = n.attribute("country")?;
+            let name = n.attribute("name")?;
+	    let sponsor = n.attribute("sponsor")?;
+            Some(SpeedTestServer {
 		descr: format!("{}, {}, {}", sponsor, name, country),
-                host: n.attribute("host").ok_or("bad host")?.to_string(),
-                url: n.attribute("url").ok_or("bad url")?.to_string(),
-                id: n.attribute("id").ok_or("bad id")?.parse()?,
+                host: n.attribute("host")?.to_string(),
+                url: n.attribute("url")?.to_string(),
+                id: n.attribute("id")?.parse().ok()?,
                 distance: client_location.distance(&lll) * DEGREES_TO_KM,
 //		location: lll,
 		latency: u32::MAX,
             })
         })
-        .filter_map(Result::ok)
         .filter(|server| !ignore_servers.contains(&server.id))
         .collect();
     servers.sort_by(|a, b| {
@@ -255,7 +295,30 @@ fn download_configuration() -> Result<SpeedtestResult, ErrorString> {
     });
     servers.truncate(10);
 
-    let mut config = SpeedTestConfig {
+//    pr!("servers {:#?}", servers);
+    let threads: Vec<_> = servers.iter().filter_map(|server| {
+	let path = std::path::Path::new(&server.url);
+	let latency_url = format!(
+	    "{}/latency.txt",
+	    path.parent().ok_or("bad server path").ok()?.display()
+	);
+	Some(std::thread::spawn(move || -> Result<u32, ErrorString> {
+	    get_url_latency(&latency_url)
+	}))
+    }).collect();
+    let mut latencies = vec![];
+    for thread in threads {
+	let x = thread.join()??;
+	pr!("thread join {:?}", x);
+	latencies.push(x);
+    }
+    for (i, lat) in latencies.iter().enumerate() {
+	servers[i].latency = *lat;
+    }
+
+    servers.sort_by(|a, b| a.latency.cmp(&b.latency));
+
+    let config = SpeedTestConfig {
 	client_public_ip: client_ip,
 	client_isp: client_isp,
 //	client_location: client_location,
@@ -273,29 +336,7 @@ fn download_configuration() -> Result<SpeedtestResult, ErrorString> {
 	servers: servers,
 	ignore_servers: ignore_servers,
     };
-
-    for server in &mut config.servers {
-        let path = std::path::Path::new(&server.url);
-        let latency_url = format!(
-            "{}/latency.txt",
-            path.parent().ok_or("bad server path")?.display()
-        );
-        let latencies: Vec<_> = (0..3).map::<Result<_, ErrorString>, _>(
-	    |_i|
-	    duration(|| {
-		Ok(ureq::get(&latency_url).call()?)
-	    })
-        )
-            .filter_map(Result::ok).collect();
-	if latencies.len() > 0 {
-	    server.latency = latencies.iter().sum::<u32>() / latencies.len() as u32;
-	}
-	println!("check {} {}: {:?} / {}", latency_url, server.descr, server.latency, latencies.len());
-    }
-    config.servers.sort_by(|a, b| {
-        a.latency.cmp(&b.latency)
-    });
-    println!("config: {:#?}", config);
+    pr!("config: {:#?}", config);
 
     let timestamp = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() as u32;
     Ok(SpeedtestResult {timestamp: timestamp})
@@ -321,50 +362,33 @@ fn parse_config<'cfg>(config: &'cfg str) -> Config<'cfg> {
 }
  */
 
-//fn type_of<T>(_: &T) -> &'static str {
-//    return std::any::type_name::<T>();
-//}
-
 fn main() {
-/*
-    backtrace::trace(|frame| {
-	println!("backtrace: {:?}", frame);
-	backtrace::resolve_frame(frame, |symbol| {
-	    println!("sym: {:?}", symbol);
-	});
-	true
-    });
-*/
-    println!("sizeof opt: {}", std::mem::size_of::<Option<u8>>());
-    println!("sizeof opt: {}", std::mem::size_of::<Option<u16>>());
-    println!("sizeof opt: {}", std::mem::size_of::<Option<u32>>());
-    println!("sizeof opt: {}", std::mem::size_of::<Option<u64>>());
-    println!("sizeof opt: {}", std::mem::size_of::<Option<u128>>());
+//    pr!("sizeof opt: {}", std::mem::size_of::<Option<u128>>());
 
     std::env::set_var("RUST_BACKTRACE", "1");
-//    println!("Hello World!");
+//    pr!("Hello World!");
 
 //    let mut cmd = std::process::Command::new("speedtest");
 //    cmd.arg("--csv");
 
     let cfg = match download_configuration() {
 	Err(err) => {
-	    println!("download config error: {}", err);
+	    pr!("download config error: {}", err);
 	    return;
 	}
 	Ok(cfg) => cfg
     };
-    println!("cfg: {:?}", cfg);
+    pr!("cfg: {:?}", cfg);
 
 //    let data: Vec<u8> = std::fs::read("db.txt").unwrap();
-//    println!("data.len: {:#?}", data.len());
-//    println!("data.capacity: {:#?}", data.capacity());
+//    pr!("data.len: {:#?}", data.len());
+//    pr!("data.capacity: {:#?}", data.capacity());
 
 //    let config = parse_config(
 //        r#"hostname = foobar
 //username=barfoo"#,
 //    );
-//    println!("Parsed config: {} {} {:?}", config.hostname, config.username, config);
+//    pr!("Parsed config: {} {} {:?}", config.hostname, config.username, config);
 }
 
 /*
