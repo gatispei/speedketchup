@@ -10,7 +10,7 @@ impl std::str::FromStr for Ipv6Addr {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
 	match std::net::Ipv4Addr::from_str(s) {
 	    Ok(addr) => Ok(Ipv6Addr(std::net::Ipv4Addr::to_ipv6_mapped(&addr))),
-	    Err(err) => std::net::Ipv6Addr::from_str(s).map(|v| Ipv6Addr(v) )
+	    Err(_err) => std::net::Ipv6Addr::from_str(s).map(|v| Ipv6Addr(v) )
 	}
 //	std::net::Ipv6Addr::from_str(s).map(|v| Ipv6Addr(v) )
     }
@@ -123,21 +123,26 @@ struct SpeedTestConfig {
 #[derive(Debug, Default)]
 struct SpeedTestServer {
     descr: String,
-//    country: String,
     host: String,
+    url: String,
     id: u32,
 //    location: Point,
     distance: f32,
-//    name: String,
-//    sponsor: String,
-    url: String,
+    latency: u32,
+}
+
+fn duration<F, T>(work: F) -> Result<u32, ErrorString> where
+    F: Fn() -> Result<T, ErrorString> {
+    let start_time = std::time::SystemTime::now();
+    let _ = work()?;
+    Ok(std::time::SystemTime::now().duration_since(start_time)?.as_millis() as u32)
 }
 
 fn download_configuration() -> Result<SpeedtestResult, ErrorString> {
     let config_xml: String = ureq::get("http://www.speedtest.net/speedtest-config.php")
         .call()?.into_string()?;
     let config = roxmltree::Document::parse(&config_xml)?;
-    println!("config: {:?}", config);
+//    println!("config: {:?}", config);
 
     let server_config_node = config.descendants()
         .find(|n| n.has_tag_name("server-config"))
@@ -220,8 +225,8 @@ fn download_configuration() -> Result<SpeedtestResult, ErrorString> {
     let servers_xml: String = ureq::get("http://www.speedtest.net/speedtest-servers.php")
         .call()?.into_string()?;
     let servers = roxmltree::Document::parse(&servers_xml)?;
-    println!("servers: {:?}", servers);
-    let servers: Vec<_> = servers
+//    println!("servers: {:?}", servers);
+    let mut servers: Vec<_> = servers
         .descendants()
         .filter(|node| node.tag_name().name() == "server")
         .map::<Result<_, ErrorString>, _>(|n| {
@@ -235,17 +240,22 @@ fn download_configuration() -> Result<SpeedtestResult, ErrorString> {
             Ok(SpeedTestServer {
 		descr: format!("{}, {}, {}", sponsor, name, country),
                 host: n.attribute("host").ok_or("bad host")?.to_string(),
+                url: n.attribute("url").ok_or("bad url")?.to_string(),
                 id: n.attribute("id").ok_or("bad id")?.parse()?,
                 distance: client_location.distance(&lll) * DEGREES_TO_KM,
 //		location: lll,
-                url: n.attribute("url").ok_or("bad url")?.to_string(),
+		latency: u32::MAX,
             })
         })
         .filter_map(Result::ok)
-//        .filter(|server| !config.ignore_servers.contains(&server.id))
+        .filter(|server| !ignore_servers.contains(&server.id))
         .collect();
+    servers.sort_by(|a, b| {
+        a.distance.partial_cmp(&b.distance).unwrap()
+    });
+    servers.truncate(10);
 
-    let config = SpeedTestConfig {
+    let mut config = SpeedTestConfig {
 	client_public_ip: client_ip,
 	client_isp: client_isp,
 //	client_location: client_location,
@@ -264,10 +274,30 @@ fn download_configuration() -> Result<SpeedtestResult, ErrorString> {
 	ignore_servers: ignore_servers,
     };
 
+    for server in &mut config.servers {
+        let path = std::path::Path::new(&server.url);
+        let latency_url = format!(
+            "{}/latency.txt",
+            path.parent().ok_or("bad server path")?.display()
+        );
+        let latencies: Vec<_> = (0..3).map::<Result<_, ErrorString>, _>(
+	    |_i|
+	    duration(|| {
+		Ok(ureq::get(&latency_url).call()?)
+	    })
+        )
+            .filter_map(Result::ok).collect();
+	if latencies.len() > 0 {
+	    server.latency = latencies.iter().sum::<u32>() / latencies.len() as u32;
+	}
+	println!("check {} {}: {:?} / {}", latency_url, server.descr, server.latency, latencies.len());
+    }
+    config.servers.sort_by(|a, b| {
+        a.latency.cmp(&b.latency)
+    });
     println!("config: {:#?}", config);
 
     let timestamp = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() as u32;
-//    let res: SpeedtestResult;
     Ok(SpeedtestResult {timestamp: timestamp})
 }
 
