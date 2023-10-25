@@ -174,7 +174,13 @@ fn get_url_latency(url: &str) -> Result<u32, ErrorString> {
     let latencies: Vec<_> = (0..3).filter_map(
 	|_i|
 	duration(|| {
-	    Ok(ureq::get(&url).call()?)
+	    let dur = std::time::Duration::from_secs(1);
+	    let agent = ureq::AgentBuilder::new()
+		.timeout_connect(dur)
+		.timeout_read(dur)
+		.timeout_write(dur)
+		.build();
+	    Ok(agent.get(&url).call()?)
 	}).ok()
     )
 	.collect();
@@ -186,15 +192,16 @@ fn get_url_latency(url: &str) -> Result<u32, ErrorString> {
     Ok(lat)
 }
 
-fn download_url(host_str: &str, path: &str) -> Result<usize, ErrorString> {
+fn download_url(host_str: &str, path: &str, duration: std::time::Duration) -> Result<usize, ErrorString> {
+    let now = std::time::Instant::now();
     let mut bytes: usize = 0;
     let sock_addr = std::net::ToSocketAddrs::to_socket_addrs(host_str)?.next().ok_or("no addr")?;
-    pr!("download_url {host_str} {path} {sock_addr}");
-    let timeout = std::time::Duration::from_secs(5);
-    let mut tcp_stream = std::net::TcpStream::connect_timeout(&sock_addr, timeout)?;
-    tcp_stream.set_write_timeout(Some(timeout))?;
-    tcp_stream.set_read_timeout(Some(timeout))?;
-    pr!("connect done");
+//    pr!("download_url {host_str} {path} {sock_addr}");
+    let mut tcp_stream = std::net::TcpStream::connect_timeout(&sock_addr, duration)?;
+
+    let mut timeout = Some(duration.checked_sub(now.elapsed()).ok_or("connect too long")?);
+    tcp_stream.set_write_timeout(timeout)?;
+//    pr!("connect done");
     let req = format!("GET {path} HTTP/1.1\r
 Host: {host_str}\r
 User-Agent: {PKG_NAME}/{PKG_VERSION}\r
@@ -207,16 +214,23 @@ Connection: close\r
 //    tcp_stream.write(req.as_bytes())?;
     std::io::Write::write_all(&mut tcp_stream, req.as_bytes())?;
     let mut buf = [0_u8; 1024 * 8];
-    pr!("write done");
+//    pr!("write done");
     loop {
+	timeout = duration.checked_sub(now.elapsed());
+	if timeout.is_none() {
+//	    pr!("read timeout");
+	    break;
+	}
+	tcp_stream.set_read_timeout(timeout)?;
 	match std::io::Read::read(&mut tcp_stream, &mut buf) {
 	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
 	    Err(err) => {
-		pr!("read {err}");
+//		pr!("read {err}");
 		break
 	    }
 	    Ok(bytes_read) => {
 		if bytes_read == 0 {
+//		    pr!("read done");
 		    break
 		}
 //		pr!("read {bytes_read}");
@@ -224,11 +238,32 @@ Connection: close\r
 	    }
 	}
     }
-    pr!("read done {bytes}");
+//    pr!("read {bytes}");
     Ok(bytes)
 }
 
-fn download_configuration() -> Result<SpeedtestResult, ErrorString> {
+fn download_test(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>) -> Result<usize, ErrorString> {
+    let mut bytes = 0;
+    let now = std::time::Instant::now();
+    let mut i = 0;
+    loop {
+	let timeout = duration.checked_sub(now.elapsed());
+//	pr!("download timeout: {:?}", timeout);
+	match timeout {
+	    None => break,
+	    Some(t) => {
+		let size = sizes[i];
+		bytes += download_url(host_str, &format!("speedtest/random{size}x{size}.jpg"), t)?;
+	    }
+	}
+	if i < sizes.len() - 1 {
+	    i += 1;
+	}
+    }
+    Ok(bytes)
+}
+
+fn speedtest() -> Result<SpeedtestResult, ErrorString> {
     pr!("download_configuration");
     let config_xml: String = ureq::get("http://www.speedtest.net/speedtest-config.php")
         .call()?.into_string()?;
@@ -370,8 +405,24 @@ fn download_configuration() -> Result<SpeedtestResult, ErrorString> {
 
     let server = servers.iter().next().ok_or("no server")?;
 
-    let bytes = download_url(&server.host, "speedtest/random350x350.jpg")?;
-    pr!("bytes:{bytes}");
+    let duration = std::time::Duration::from_secs(10);
+    pr!("test {:?} {:?} {download_threads}", duration, server);
+    let threads: Vec<_> = (0..download_threads).map(|_i| {
+	let sh = server.host.clone();
+	let ds = download_sizes.clone();
+	std::thread::spawn(move || -> Result<usize, ErrorString> {
+	    download_test(&sh, duration, &ds)
+	})
+    }).collect();
+    let mut bytes = 0;
+    for thread in threads {
+	bytes += thread.join()??;
+    }
+
+//    let bytes = download_test(&server.host, duration, &download_sizes)?;
+    let mbps = (bytes as f64) * 8.0 / 1000.0 / (duration.as_millis() as f64);
+    pr!("mbps:{mbps} bytes:{bytes}");
+
 /*
     let config = SpeedTestConfig {
 	client_public_ip: client_ip,
@@ -419,21 +470,16 @@ fn parse_config<'cfg>(config: &'cfg str) -> Config<'cfg> {
 
 fn main() {
 //    pr!("sizeof opt: {}", std::mem::size_of::<Option<u128>>());
-
     std::env::set_var("RUST_BACKTRACE", "1");
-//    pr!("Hello World!");
 
-//    let mut cmd = std::process::Command::new("speedtest");
-//    cmd.arg("--csv");
-
-    let cfg = match download_configuration() {
+    let result = match speedtest() {
 	Err(err) => {
-	    pr!("download config error: {}", err);
+	    pr!("speedtest error: {}", err);
 	    return;
 	}
-	Ok(cfg) => cfg
+	Ok(r) => r
     };
-    pr!("cfg: {:?}", cfg);
+    pr!("result: {:?}", result);
 
 //    let data: Vec<u8> = std::fs::read("db.txt").unwrap();
 //    pr!("data.len: {:#?}", data.len());
