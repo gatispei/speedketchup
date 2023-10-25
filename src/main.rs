@@ -2,6 +2,9 @@
 //#![no_main]
 //extern crate libc;
 
+const PKG_NAME: &str = env!("CARGO_PKG_NAME");
+const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Debug)]
 struct Ipv6Addr(std::net::Ipv6Addr);
 
@@ -64,6 +67,11 @@ impl From<std::time::SystemTimeError> for ErrorString {
         ErrorString(err.to_string())
     }
 }
+//impl From<url::ParseError> for ErrorString {
+//    fn from(err: url::ParseError) -> ErrorString {
+//        ErrorString(err.to_string())
+//    }
+//}
 impl From<std::boxed::Box<dyn std::any::Any + std::marker::Send>> for ErrorString {
     fn from(_err: std::boxed::Box<dyn std::any::Any + std::marker::Send>) -> ErrorString {
         ErrorString("thread panciked".to_string())
@@ -143,7 +151,7 @@ fn type_of<T>(_: &T) -> &'static str {
 
 fn timestr() -> String {
     let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
-    format!("{}.{:0>3}: ",
+    format!("{}.{:0>3}",
 	    libc_strftime::strftime_local("%Y.%m.%d-%H:%M:%S", d.as_secs() as i64),
 	    d.subsec_millis())
 }
@@ -176,6 +184,48 @@ fn get_url_latency(url: &str) -> Result<u32, ErrorString> {
     }
     pr!("check {}: {:?} / {}", url, lat, latencies.len());
     Ok(lat)
+}
+
+fn download_url(host_str: &str, path: &str) -> Result<usize, ErrorString> {
+    let mut bytes: usize = 0;
+    let sock_addr = std::net::ToSocketAddrs::to_socket_addrs(host_str)?.next().ok_or("no addr")?;
+    pr!("download_url {host_str} {path} {sock_addr}");
+    let timeout = std::time::Duration::from_secs(5);
+    let mut tcp_stream = std::net::TcpStream::connect_timeout(&sock_addr, timeout)?;
+    tcp_stream.set_write_timeout(Some(timeout))?;
+    tcp_stream.set_read_timeout(Some(timeout))?;
+    pr!("connect done");
+    let req = format!("GET {path} HTTP/1.1\r
+Host: {host_str}\r
+User-Agent: {PKG_NAME}/{PKG_VERSION}\r
+Accept: */*\r
+Cache-control: no-cache\r
+Connection: close\r
+\r
+");
+//    use std::io::prelude::Write;
+//    tcp_stream.write(req.as_bytes())?;
+    std::io::Write::write_all(&mut tcp_stream, req.as_bytes())?;
+    let mut buf = [0_u8; 1024 * 8];
+    pr!("write done");
+    loop {
+	match std::io::Read::read(&mut tcp_stream, &mut buf) {
+	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+	    Err(err) => {
+		pr!("read {err}");
+		break
+	    }
+	    Ok(bytes_read) => {
+		if bytes_read == 0 {
+		    break
+		}
+//		pr!("read {bytes_read}");
+		bytes += bytes_read
+	    }
+	}
+    }
+    pr!("read done {bytes}");
+    Ok(bytes)
 }
 
 fn download_configuration() -> Result<SpeedtestResult, ErrorString> {
@@ -309,7 +359,7 @@ fn download_configuration() -> Result<SpeedtestResult, ErrorString> {
     let mut latencies = vec![];
     for thread in threads {
 	let x = thread.join()??;
-	pr!("thread join {:?}", x);
+//	pr!("thread join {:?}", x);
 	latencies.push(x);
     }
     for (i, lat) in latencies.iter().enumerate() {
@@ -318,6 +368,11 @@ fn download_configuration() -> Result<SpeedtestResult, ErrorString> {
 
     servers.sort_by(|a, b| a.latency.cmp(&b.latency));
 
+    let server = servers.iter().next().ok_or("no server")?;
+
+    let bytes = download_url(&server.host, "speedtest/random350x350.jpg")?;
+    pr!("bytes:{bytes}");
+/*
     let config = SpeedTestConfig {
 	client_public_ip: client_ip,
 	client_isp: client_isp,
@@ -337,7 +392,7 @@ fn download_configuration() -> Result<SpeedtestResult, ErrorString> {
 	ignore_servers: ignore_servers,
     };
     pr!("config: {:#?}", config);
-
+*/
     let timestamp = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() as u32;
     Ok(SpeedtestResult {timestamp: timestamp})
 }
