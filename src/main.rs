@@ -136,7 +136,12 @@ fn timestr() -> String {
 
 macro_rules! pr {
     ($($arg:tt)*) => {{
-	print!("{}: ", timestr());
+	let c = std::thread::current();
+	let tn = match c.name() {
+	    Some(n) => n,
+	    None => ""
+	};
+	print!("{} {tn}: ", timestr());
 	println!($($arg)*);
     }};
 }
@@ -177,9 +182,9 @@ fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>) -> Result<(), Err
 	    "{}/latency.txt",
 	    path.parent().ok_or("bad server path").ok()?.display()
 	);
-	Some(std::thread::spawn(move || -> Result<u32, ErrorString> {
+	Some(std::thread::Builder::new().name(format!("test {} latency", server.host)).spawn(move || -> Result<u32, ErrorString> {
 	    url_get_latency(&latency_url)
-	}))
+	}).ok()?)
     }).collect();
     let mut latencies = vec![];
     for thread in threads {
@@ -195,29 +200,74 @@ fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>) -> Result<(), Err
     Ok(())
 }
 
-fn url_download(host_str: &str, path: &str, duration: std::time::Duration) -> Result<usize, ErrorString> {
+fn http_request<READ>(
+    host: &str,
+    path: &str,
+    method: &str,
+    extra_headers: &str,
+    duration: std::time::Duration,
+    send_data_size: usize,
+    mut read_cb: READ)
+    -> Result<usize, ErrorString>
+where
+    READ: FnMut(&[u8]) -> ()
+{
     let now = std::time::Instant::now();
-    let mut bytes: usize = 0;
-    let sock_addr = std::net::ToSocketAddrs::to_socket_addrs(host_str)?.next().ok_or("no addr")?;
-//    pr!("url_download {host_str} {path} {sock_addr}");
+    let sock_addr = std::net::ToSocketAddrs::to_socket_addrs(host)?.next().ok_or("no addr")?;
+//    pr!("http_request {host} {path} {method} {sock_addr} {:?} {send_data_size}", duration);
     let mut tcp_stream = std::net::TcpStream::connect_timeout(&sock_addr, duration)?;
 
     let mut timeout = Some(duration.checked_sub(now.elapsed()).ok_or("connect too long")?);
     tcp_stream.set_write_timeout(timeout)?;
 //    pr!("connect done");
-    let req = format!("GET {path} HTTP/1.1\r
-Host: {host_str}\r
+    let req = format!("{method} {path} HTTP/1.1\r
+Host: {host}\r
 User-Agent: {PKG_NAME}/{PKG_VERSION}\r
 Accept: */*\r
 Cache-Control: no-cache\r
 Connection: close\r
-\r
+{extra_headers}\r
 ");
 //    use std::io::prelude::Write;
 //    tcp_stream.write(req.as_bytes())?;
     std::io::Write::write_all(&mut tcp_stream, req.as_bytes())?;
     let mut buf = [0_u8; 1024 * 8];
-//    pr!("write done");
+    let mut bytes_written = 0;
+//    pr!("write request done");
+
+    // send post data
+    loop {
+	if bytes_written >= send_data_size {
+	    break;
+	}
+	timeout = duration.checked_sub(now.elapsed());
+	if timeout.is_none() {
+//	    pr!("write timeout");
+	    break;
+	}
+	tcp_stream.set_write_timeout(timeout)?;
+	let mut remain = send_data_size - bytes_written;
+	if remain > buf.len() {
+	    remain = buf.len();
+	}
+	match std::io::Write::write(&mut tcp_stream, &buf[0..remain]) {
+	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+	    Err(_err) => {
+//		pr!("write {_err}");
+		break
+	    }
+	    Ok(ret) => {
+		if ret == 0 {
+//		    pr!("write done");
+		    break
+		}
+//		pr!("write {ret}");
+		bytes_written += ret
+	    }
+	}
+    }
+
+    // receive response
     loop {
 	timeout = duration.checked_sub(now.elapsed());
 	if timeout.is_none() {
@@ -236,100 +286,13 @@ Connection: close\r
 //		    pr!("read done");
 		    break
 		}
+		read_cb(&buf[0..bytes_read]);
 //		pr!("read {bytes_read}");
-		bytes += bytes_read
 	    }
 	}
     }
-//    pr!("read {bytes}");
-    Ok(bytes)
-}
-
-fn url_upload(host_str: &str, path: &str, duration: std::time::Duration, size: usize) -> Result<usize, ErrorString> {
-    let mut bytes: usize = 0;
-    let now = std::time::Instant::now();
-    let sock_addr = std::net::ToSocketAddrs::to_socket_addrs(host_str)?.next().ok_or("no addr")?;
-//    pr!("url_upload {host_str} {path} {sock_addr} size:{size}");
-    /*
-    let agent = ureq::AgentBuilder::new()
-	.timeout_connect(duration)
-	.timeout_read(duration)
-	.timeout_write(duration)
-	.build();
-    let resp: String = agent.post(&format!("http://{host_str}/{path}")).send_bytes(&[0xff_u8; 10])?.into_string()?;
-    pr!("resp: {resp}");
-    */
-    let mut tcp_stream = std::net::TcpStream::connect_timeout(&sock_addr, duration)?;
-
-    let mut timeout = Some(duration.checked_sub(now.elapsed()).ok_or("connect too long")?);
-    tcp_stream.set_write_timeout(timeout)?;
-//    pr!("connect done");
-    let req = format!("POST {path} HTTP/1.1\r
-Host: {host_str}\r
-User-Agent: {PKG_NAME}/{PKG_VERSION}\r
-Accept: */*\r
-Connection: close\r
-Content-Length: {size}\r
-\r
-");
-    std::io::Write::write_all(&mut tcp_stream, req.as_bytes())?;
-    let mut buf = [0_u8; 1024 * 8];
-//    pr!("request write done");
-    loop {
-	timeout = duration.checked_sub(now.elapsed());
-	if timeout.is_none() {
-//	    pr!("write timeout");
-	    break;
-	}
-	tcp_stream.set_write_timeout(timeout)?;
-	let mut remain = size - bytes;
-	if remain > buf.len() {
-	    remain = buf.len();
-	}
-	match std::io::Write::write(&mut tcp_stream, &buf[0..remain]) {
-	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-	    Err(_err) => {
-//		pr!("write {_err}");
-		break
-	    }
-	    Ok(bytes_written) => {
-		if bytes_written == 0 {
-//		    pr!("write done");
-		    break
-		}
-//		pr!("write {bytes_written}");
-		bytes += bytes_written
-	    }
-	}
-	if bytes >= size {
-	    // read at least some part of the response - that would mean server has actually received the post
-	    loop {
-		timeout = duration.checked_sub(now.elapsed());
-		if timeout.is_none() {
-//		    pr!("read timeout");
-		    break;
-		}
-		tcp_stream.set_read_timeout(timeout)?;
-		match std::io::Read::read(&mut tcp_stream, &mut buf) {
-		    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-		    Err(_err) => {
-//			pr!("read {_err}");
-			break
-		    }
-		    Ok(_bytes_read) => {
-//			let resp = String::from_utf8_lossy(&buf[0.._bytes_read]);
-//			pr!("read done {_bytes_read} {resp}");
-			break;
-		    }
-		}
-	    }
-
-	    break;
-	}
-    }
-//    pr!("wrote {bytes}");
-
-    Ok(bytes)
+//    pr!("read");
+    Ok(bytes_written)
 }
 
 fn test_download(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>) -> Result<usize, ErrorString> {
@@ -343,7 +306,11 @@ fn test_download(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>
 	    None => break,
 	    Some(t) => {
 		let size = sizes[i];
-		bytes += url_download(host_str, &format!("speedtest/random{size}x{size}.jpg"), t)?;
+		let path = format!("speedtest/random{size}x{size}.jpg");
+		match http_request(host_str, &path, "GET", "", t, 0, |buf| bytes += buf.len()) {
+		    Err(err) => pr!("http error: {err}"),
+		    Ok(_) => ()
+		}
 	    }
 	}
 	if i < sizes.len() - 1 {
@@ -364,7 +331,14 @@ fn test_upload(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>) 
 	    None => break,
 	    Some(t) => {
 		let size = sizes[i];
-		bytes += url_upload(host_str, "speedtest/upload.php", t, size as usize)?;
+		let path = "speedtest/upload.php";
+		bytes += match http_request(host_str, &path, "POST", &format!("Content-Length: {size}\r\n"), t, size as usize, |_| ()) {
+		    Err(err) => {
+			pr!("http error: {err}");
+			0
+		    }
+		    Ok(x) => x
+		}
 	    }
 	}
 	if i < sizes.len() - 1 {
@@ -378,24 +352,26 @@ fn test_multithread(
     host_str: &str,
     duration: std::time::Duration, sizes: &Vec<u32>,
     thread_count: u32,
-    func: fn(&str, std::time::Duration, &Vec<u32>) -> Result<usize, ErrorString>) -> Result<usize, ErrorString> {
+    func: fn(&str, std::time::Duration, &Vec<u32>) -> Result<usize, ErrorString>)
+    -> Result<usize, ErrorString> {
     pr!("test_multithread host:{host_str} duration:{:?} threads:{thread_count} func:{:?}", duration, func);
-    let threads: Vec<_> = (0..thread_count).map(|i| {
+    let threads: Vec<_> = (0..thread_count).filter_map(|i| {
 	let sh: String = host_str.into();
 	let ds = sizes.clone();
-	std::thread::spawn(move || -> usize {
+
+	Some(std::thread::Builder::new().name(format!("test{i}")).spawn(move || -> usize {
 	    match func(&sh, duration, &ds) {
 		Ok(bytes) => {
 		    let mbps = (bytes as f32) * 8.0 / 1000.0 / (duration.as_millis() as f32);
-		    pr!("thread {i} mbps:{mbps} bytes:{bytes}");
+		    pr!("mbps:{mbps} bytes:{bytes}");
 		    bytes
 		},
 		Err(err) => {
-		    pr!("thread {i}: {err}");
+		    pr!("{err}");
 		    0
 		}
 	    }
-	})
+	}).ok()?)
     }).collect();
     let mut bytes = 0;
     for thread in threads {
