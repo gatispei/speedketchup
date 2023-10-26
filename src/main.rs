@@ -78,21 +78,6 @@ impl From<std::boxed::Box<dyn std::any::Any + std::marker::Send>> for ErrorStrin
     }
 }
 
-#[derive(Debug)]
-struct SpeedtestResult {
-    timestamp: u32,
-    /*
-    latency: u32,
-    download: u32,
-    upload: u32,
-    public_ip: std::net::Ipv6Addr,
-    isp: String,
-    server_id: u32,
-    server_sponsor: String,
-    server_host: String,
-    */
-}
-
 #[derive(Default, Debug)]
 struct Point {
     x: f32,
@@ -113,35 +98,28 @@ impl Default for Ipv6Addr {
     }
 }
 
-#[derive(Default, Debug)]
-struct SpeedTestConfig {
-    client_public_ip: Ipv6Addr,
-    client_isp: String,
-//    client_location: Point,
-
-    upload_sizes: Vec<u32>,
-    download_sizes: Vec<u32>,
-    upload_count: u32,
-    download_count: u32,
-    upload_threads: u32,
-    download_threads: u32,
-    upload_duration: std::time::Duration,
-    download_duration: std::time::Duration,
-    upload_max: u32,
-
-    servers: Vec<SpeedTestServer>,
-    ignore_servers: Vec<u32>,
-}
-
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct SpeedTestServer {
     descr: String,
     host: String,
     url: String,
     id: u32,
-//    location: Point,
     distance: f32,
     latency: u32,
+}
+
+#[derive(Debug)]
+struct SpeedTestResult {
+    timestamp: u32,
+    latency: u32,
+    download: f32,
+    upload: f32,
+    client_public_ip: Ipv6Addr,
+    client_isp: String,
+    server: SpeedTestServer,
+//    server_id: u32,
+//    server_descr: String,
+//    server_host: String,
 }
 
 #[allow(dead_code)]
@@ -170,7 +148,7 @@ fn duration<F, T>(work: F) -> Result<u32, ErrorString> where
     Ok(now.elapsed().as_millis() as u32)
 }
 
-fn get_url_latency(url: &str) -> Result<u32, ErrorString> {
+fn url_get_latency(url: &str) -> Result<u32, ErrorString> {
     let latencies: Vec<_> = (0..3).filter_map(
 	|_i|
 	duration(|| {
@@ -192,11 +170,36 @@ fn get_url_latency(url: &str) -> Result<u32, ErrorString> {
     Ok(lat)
 }
 
-fn download_url(host_str: &str, path: &str, duration: std::time::Duration) -> Result<usize, ErrorString> {
+fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>) -> Result<(), ErrorString> {
+    let threads: Vec<_> = servers.iter().filter_map(|server| {
+	let path = std::path::Path::new(&server.url);
+	let latency_url = format!(
+	    "{}/latency.txt",
+	    path.parent().ok_or("bad server path").ok()?.display()
+	);
+	Some(std::thread::spawn(move || -> Result<u32, ErrorString> {
+	    url_get_latency(&latency_url)
+	}))
+    }).collect();
+    let mut latencies = vec![];
+    for thread in threads {
+	let x = thread.join()??;
+//	pr!("thread join {:?}", x);
+	latencies.push(x);
+    }
+    for (i, lat) in latencies.iter().enumerate() {
+	servers[i].latency = *lat;
+    }
+
+    servers.sort_by(|a, b| a.latency.cmp(&b.latency));
+    Ok(())
+}
+
+fn url_download(host_str: &str, path: &str, duration: std::time::Duration) -> Result<usize, ErrorString> {
     let now = std::time::Instant::now();
     let mut bytes: usize = 0;
     let sock_addr = std::net::ToSocketAddrs::to_socket_addrs(host_str)?.next().ok_or("no addr")?;
-//    pr!("download_url {host_str} {path} {sock_addr}");
+//    pr!("url_download {host_str} {path} {sock_addr}");
     let mut tcp_stream = std::net::TcpStream::connect_timeout(&sock_addr, duration)?;
 
     let mut timeout = Some(duration.checked_sub(now.elapsed()).ok_or("connect too long")?);
@@ -206,7 +209,7 @@ fn download_url(host_str: &str, path: &str, duration: std::time::Duration) -> Re
 Host: {host_str}\r
 User-Agent: {PKG_NAME}/{PKG_VERSION}\r
 Accept: */*\r
-Cache-control: no-cache\r
+Cache-Control: no-cache\r
 Connection: close\r
 \r
 ");
@@ -224,7 +227,7 @@ Connection: close\r
 	tcp_stream.set_read_timeout(timeout)?;
 	match std::io::Read::read(&mut tcp_stream, &mut buf) {
 	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-	    Err(err) => {
+	    Err(_err) => {
 //		pr!("read {err}");
 		break
 	    }
@@ -242,7 +245,94 @@ Connection: close\r
     Ok(bytes)
 }
 
-fn download_test(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>) -> Result<usize, ErrorString> {
+fn url_upload(host_str: &str, path: &str, duration: std::time::Duration, size: usize) -> Result<usize, ErrorString> {
+    let mut bytes: usize = 0;
+    let now = std::time::Instant::now();
+    let sock_addr = std::net::ToSocketAddrs::to_socket_addrs(host_str)?.next().ok_or("no addr")?;
+    pr!("url_upload {host_str} {path} {sock_addr}");
+    /*
+    let agent = ureq::AgentBuilder::new()
+	.timeout_connect(duration)
+	.timeout_read(duration)
+	.timeout_write(duration)
+	.build();
+    let resp: String = agent.post(&format!("http://{host_str}/{path}")).send_bytes(&[0xff_u8; 10])?.into_string()?;
+    pr!("resp: {resp}");
+    */
+    let mut tcp_stream = std::net::TcpStream::connect_timeout(&sock_addr, duration)?;
+
+    let mut timeout = Some(duration.checked_sub(now.elapsed()).ok_or("connect too long")?);
+    tcp_stream.set_write_timeout(timeout)?;
+//    pr!("connect done");
+    let req = format!("POST {path} HTTP/1.1\r
+Host: {host_str}\r
+User-Agent: {PKG_NAME}/{PKG_VERSION}\r
+Accept: */*\r
+Connection: close\r
+Content-Length: {size}\r
+\r
+");
+    std::io::Write::write_all(&mut tcp_stream, req.as_bytes())?;
+    let mut buf = [0_u8; 1024 * 8];
+//    pr!("request write done");
+    loop {
+	timeout = duration.checked_sub(now.elapsed());
+	if timeout.is_none() {
+//	    pr!("write timeout");
+	    break;
+	}
+	tcp_stream.set_write_timeout(timeout)?;
+	let mut remain = size - bytes;
+	if remain > buf.len() {
+	    remain = buf.len();
+	}
+	match std::io::Write::write(&mut tcp_stream, &buf[0..remain]) {
+	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+	    Err(_err) => {
+//		pr!("write {_err}");
+		break
+	    }
+	    Ok(bytes_written) => {
+		if bytes_written == 0 {
+//		    pr!("write done");
+		    break
+		}
+//		pr!("write {bytes_written}");
+		bytes += bytes_written
+	    }
+	}
+	if bytes >= size {
+	    // read at least some part of the response - that would mean server has actually received the post
+	    loop {
+		timeout = duration.checked_sub(now.elapsed());
+		if timeout.is_none() {
+//		    pr!("read timeout");
+		    break;
+		}
+		tcp_stream.set_read_timeout(timeout)?;
+		match std::io::Read::read(&mut tcp_stream, &mut buf) {
+		    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+		    Err(_err) => {
+//			pr!("read {_err}");
+			break
+		    }
+		    Ok(_bytes_read) => {
+//			let resp = String::from_utf8_lossy(&buf[0.._bytes_read]);
+//			pr!("read done {_bytes_read} {resp}");
+			break;
+		    }
+		}
+	    }
+
+	    break;
+	}
+    }
+//    pr!("wrote {bytes}");
+
+    Ok(bytes)
+}
+
+fn test_download(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>) -> Result<usize, ErrorString> {
     let mut bytes = 0;
     let now = std::time::Instant::now();
     let mut i = 0;
@@ -253,7 +343,7 @@ fn download_test(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>
 	    None => break,
 	    Some(t) => {
 		let size = sizes[i];
-		bytes += download_url(host_str, &format!("speedtest/random{size}x{size}.jpg"), t)?;
+		bytes += url_download(host_str, &format!("speedtest/random{size}x{size}.jpg"), t)?;
 	    }
 	}
 	if i < sizes.len() - 1 {
@@ -263,9 +353,44 @@ fn download_test(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>
     Ok(bytes)
 }
 
-fn speedtest() -> Result<SpeedtestResult, ErrorString> {
+fn test_multithread_download(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>, thread_count: u32) -> Result<usize, ErrorString> {
+    let threads: Vec<_> = (0..thread_count).map(|i| {
+	let sh: String = host_str.into();
+	let ds = sizes.clone();
+	std::thread::spawn(move || -> usize {
+	    match test_download(&sh, duration, &ds) {
+		Ok(bytes) => {
+		    let mbps = (bytes as f32) * 8.0 / 1000.0 / (duration.as_millis() as f32);
+		    pr!("thread {i} mbps:{mbps} bytes:{bytes}");
+		    bytes
+		},
+		Err(err) => {
+		    pr!("thread {i}: {err}");
+		    0
+		}
+	    }
+	})
+    }).collect();
+    let mut bytes = 0;
+    for thread in threads {
+//	bytes += thread.join()?;
+	match thread.join() {
+	    Ok(res) => bytes += res,
+	    Err(err) => pr!("thread join failed: {:?}", err),
+	}
+    }
+    Ok(bytes)
+}
+
+fn speedtest() -> Result<SpeedTestResult, ErrorString> {
     pr!("download_configuration");
-    let config_xml: String = ureq::get("http://www.speedtest.net/speedtest-config.php")
+    let dur = std::time::Duration::from_secs(3);
+    let agent = ureq::AgentBuilder::new()
+	.timeout_connect(dur)
+	.timeout_read(dur)
+	.timeout_write(dur)
+	.build();
+    let config_xml: String = agent.get("http://www.speedtest.net/speedtest-config.php")
         .call()?.into_string()?;
     let config = roxmltree::Document::parse(&config_xml)?;
     pr!("config_xml.len(): {:?}", config_xml.len());
@@ -301,21 +426,21 @@ fn speedtest() -> Result<SpeedtestResult, ErrorString> {
         .ok_or("no ratio")?
         .parse::<usize>()?;
 
-    let upload_max = upload_node
-        .attribute("maxchunkcount")
-        .ok_or("no maxchunkcount")?
-        .parse::<u32>()?;
+//    let upload_max = upload_node
+//        .attribute("maxchunkcount")
+//        .ok_or("no maxchunkcount")?
+//        .parse::<u32>()?;
 
     let upload_sizes = vec![32768_u32, 65536, 131072, 262144, 524288, 1048576, 7340032];
     let upload_sizes = upload_sizes.get(ratio - 1..).ok_or("bad upsize")?.to_vec();
     let download_sizes = vec![350_u32, 500, 750, 1000, 1500, 2000, 2500, 3000, 3500, 4000];
 
     let size_count = upload_sizes.len();
-    let upload_count = (upload_max as f32 / size_count as f32).ceil() as u32;
-    let download_count = download_node
-        .attribute("threadsperurl")
-        .ok_or("no threadsperurl")?
-        .parse::<u32>()?;
+//    let upload_count = (upload_max as f32 / size_count as f32).ceil() as u32;
+//    let download_count = download_node
+//        .attribute("threadsperurl")
+//        .ok_or("no threadsperurl")?
+//        .parse::<u32>()?;
 
     let upload_threads = upload_node
         .attribute("threads")
@@ -348,7 +473,7 @@ fn speedtest() -> Result<SpeedtestResult, ErrorString> {
         .to_string();
 
 
-    let servers_xml: String = ureq::get("http://www.speedtest.net/speedtest-servers.php")
+    let servers_xml: String = agent.get("http://www.speedtest.net/speedtest-servers.php")
         .call()?.into_string()?;
     let servers = roxmltree::Document::parse(&servers_xml)?;
     pr!("servers_xml.len(): {:?}", servers_xml.len());
@@ -379,73 +504,27 @@ fn speedtest() -> Result<SpeedtestResult, ErrorString> {
         a.distance.partial_cmp(&b.distance).unwrap()
     });
     servers.truncate(10);
-
-//    pr!("servers {:#?}", servers);
-    let threads: Vec<_> = servers.iter().filter_map(|server| {
-	let path = std::path::Path::new(&server.url);
-	let latency_url = format!(
-	    "{}/latency.txt",
-	    path.parent().ok_or("bad server path").ok()?.display()
-	);
-	Some(std::thread::spawn(move || -> Result<u32, ErrorString> {
-	    get_url_latency(&latency_url)
-	}))
-    }).collect();
-    let mut latencies = vec![];
-    for thread in threads {
-	let x = thread.join()??;
-//	pr!("thread join {:?}", x);
-	latencies.push(x);
-    }
-    for (i, lat) in latencies.iter().enumerate() {
-	servers[i].latency = *lat;
-    }
-
-    servers.sort_by(|a, b| a.latency.cmp(&b.latency));
+//    servers_sort_by_latency(&mut servers)?;
+    pr!("servers {:#?}", servers);
 
     let server = servers.iter().next().ok_or("no server")?;
+    pr!("test {:?} {:?} {download_threads}", download_duration, server);
+//    let bytes = test_multithread_download(&server.host, download_duration, &download_sizes, download_threads)?;
+//    let mbps = (bytes as f32) * 8.0 / 1000.0 / (download_duration.as_millis() as f32);
+//    pr!("mbps:{mbps} bytes:{bytes}");
 
-    let duration = std::time::Duration::from_secs(10);
-    pr!("test {:?} {:?} {download_threads}", duration, server);
-    let threads: Vec<_> = (0..download_threads).map(|_i| {
-	let sh = server.host.clone();
-	let ds = download_sizes.clone();
-	std::thread::spawn(move || -> Result<usize, ErrorString> {
-	    download_test(&sh, duration, &ds)
-	})
-    }).collect();
-    let mut bytes = 0;
-    for thread in threads {
-	bytes += thread.join()??;
-    }
+    url_upload(&server.host, "speedtest/upload.php", upload_duration, 1000)?;
 
-//    let bytes = download_test(&server.host, duration, &download_sizes)?;
-    let mbps = (bytes as f64) * 8.0 / 1000.0 / (duration.as_millis() as f64);
-    pr!("mbps:{mbps} bytes:{bytes}");
-
-/*
-    let config = SpeedTestConfig {
+    let timestamp = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() as u32;
+    Ok(SpeedTestResult {
+	timestamp: timestamp,
+	latency: server.latency,
+	download: 0.0,
+	upload: 0.0,
 	client_public_ip: client_ip,
 	client_isp: client_isp,
-//	client_location: client_location,
-
-	upload_sizes: upload_sizes,
-	download_sizes: download_sizes,
-	upload_count: upload_count,
-	download_count: download_count,
-	upload_threads: upload_threads,
-	download_threads: download_threads,
-	upload_duration: upload_duration,
-	download_duration: download_duration,
-	upload_max: upload_max,
-
-	servers: servers,
-	ignore_servers: ignore_servers,
-    };
-    pr!("config: {:#?}", config);
-*/
-    let timestamp = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() as u32;
-    Ok(SpeedtestResult {timestamp: timestamp})
+	server: server.clone(),
+    })
 }
 
 /*
@@ -479,7 +558,7 @@ fn main() {
 	}
 	Ok(r) => r
     };
-    pr!("result: {:?}", result);
+    pr!("result: {:#?}", result);
 
 //    let data: Vec<u8> = std::fs::read("db.txt").unwrap();
 //    pr!("data.len: {:#?}", data.len());
