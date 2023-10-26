@@ -67,11 +67,6 @@ impl From<std::time::SystemTimeError> for ErrorString {
         ErrorString(err.to_string())
     }
 }
-//impl From<url::ParseError> for ErrorString {
-//    fn from(err: url::ParseError) -> ErrorString {
-//        ErrorString(err.to_string())
-//    }
-//}
 impl From<std::boxed::Box<dyn std::any::Any + std::marker::Send>> for ErrorString {
     fn from(_err: std::boxed::Box<dyn std::any::Any + std::marker::Send>) -> ErrorString {
         ErrorString("thread panciked".to_string())
@@ -153,17 +148,12 @@ fn duration<F, T>(work: F) -> Result<u32, ErrorString> where
     Ok(now.elapsed().as_millis() as u32)
 }
 
-fn url_get_latency(url: &str) -> Result<u32, ErrorString> {
+fn url_get_latency(host: &str, path: &str) -> Result<u32, ErrorString> {
     let latencies: Vec<_> = (0..3).filter_map(
 	|_i|
 	duration(|| {
 	    let dur = std::time::Duration::from_secs(1);
-	    let agent = ureq::AgentBuilder::new()
-		.timeout_connect(dur)
-		.timeout_read(dur)
-		.timeout_write(dur)
-		.build();
-	    Ok(agent.get(&url).call()?)
+	    Ok(http_request(host, path, "GET", "", dur, 0, |_| ())?)
 	}).ok()
     )
 	.collect();
@@ -171,19 +161,15 @@ fn url_get_latency(url: &str) -> Result<u32, ErrorString> {
     if latencies.len() > 0 {
 	lat = latencies.iter().sum::<u32>() / latencies.len() as u32;
     }
-    pr!("check {}: {:?} / {}", url, lat, latencies.len());
+    pr!("result {}: {:?} / {}", path, lat, latencies.len());
     Ok(lat)
 }
 
 fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>) -> Result<(), ErrorString> {
     let threads: Vec<_> = servers.iter().filter_map(|server| {
-	let path = std::path::Path::new(&server.url);
-	let latency_url = format!(
-	    "{}/latency.txt",
-	    path.parent().ok_or("bad server path").ok()?.display()
-	);
+	let host = server.host.clone();
 	Some(std::thread::Builder::new().name(format!("test {} latency", server.host)).spawn(move || -> Result<u32, ErrorString> {
-	    url_get_latency(&latency_url)
+	    url_get_latency(&host, "speedtest/latency.txt")
 	}).ok()?)
     }).collect();
     let mut latencies = vec![];
