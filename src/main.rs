@@ -249,7 +249,7 @@ fn url_upload(host_str: &str, path: &str, duration: std::time::Duration, size: u
     let mut bytes: usize = 0;
     let now = std::time::Instant::now();
     let sock_addr = std::net::ToSocketAddrs::to_socket_addrs(host_str)?.next().ok_or("no addr")?;
-    pr!("url_upload {host_str} {path} {sock_addr}");
+//    pr!("url_upload {host_str} {path} {sock_addr} size:{size}");
     /*
     let agent = ureq::AgentBuilder::new()
 	.timeout_connect(duration)
@@ -353,12 +353,38 @@ fn test_download(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>
     Ok(bytes)
 }
 
-fn test_multithread_download(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>, thread_count: u32) -> Result<usize, ErrorString> {
+fn test_upload(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>) -> Result<usize, ErrorString> {
+    let mut bytes = 0;
+    let now = std::time::Instant::now();
+    let mut i = 0;
+    loop {
+	let timeout = duration.checked_sub(now.elapsed());
+//	pr!("upload timeout: {:?}", timeout);
+	match timeout {
+	    None => break,
+	    Some(t) => {
+		let size = sizes[i];
+		bytes += url_upload(host_str, "speedtest/upload.php", t, size as usize)?;
+	    }
+	}
+	if i < sizes.len() - 1 {
+	    i += 1;
+	}
+    }
+    Ok(bytes)
+}
+
+fn test_multithread(
+    host_str: &str,
+    duration: std::time::Duration, sizes: &Vec<u32>,
+    thread_count: u32,
+    func: fn(&str, std::time::Duration, &Vec<u32>) -> Result<usize, ErrorString>) -> Result<usize, ErrorString> {
+    pr!("test_multithread host:{host_str} duration:{:?} threads:{thread_count} func:{:?}", duration, func);
     let threads: Vec<_> = (0..thread_count).map(|i| {
 	let sh: String = host_str.into();
 	let ds = sizes.clone();
 	std::thread::spawn(move || -> usize {
-	    match test_download(&sh, duration, &ds) {
+	    match func(&sh, duration, &ds) {
 		Ok(bytes) => {
 		    let mbps = (bytes as f32) * 8.0 / 1000.0 / (duration.as_millis() as f32);
 		    pr!("thread {i} mbps:{mbps} bytes:{bytes}");
@@ -435,7 +461,7 @@ fn speedtest() -> Result<SpeedTestResult, ErrorString> {
     let upload_sizes = upload_sizes.get(ratio - 1..).ok_or("bad upsize")?.to_vec();
     let download_sizes = vec![350_u32, 500, 750, 1000, 1500, 2000, 2500, 3000, 3500, 4000];
 
-    let size_count = upload_sizes.len();
+//    let size_count = upload_sizes.len();
 //    let upload_count = (upload_max as f32 / size_count as f32).ceil() as u32;
 //    let download_count = download_node
 //        .attribute("threadsperurl")
@@ -504,23 +530,29 @@ fn speedtest() -> Result<SpeedTestResult, ErrorString> {
         a.distance.partial_cmp(&b.distance).unwrap()
     });
     servers.truncate(10);
-//    servers_sort_by_latency(&mut servers)?;
-    pr!("servers {:#?}", servers);
+    servers_sort_by_latency(&mut servers)?;
+//    pr!("servers {:#?}", servers);
 
     let server = servers.iter().next().ok_or("no server")?;
-    pr!("test {:?} {:?} {download_threads}", download_duration, server);
-//    let bytes = test_multithread_download(&server.host, download_duration, &download_sizes, download_threads)?;
-//    let mbps = (bytes as f32) * 8.0 / 1000.0 / (download_duration.as_millis() as f32);
-//    pr!("mbps:{mbps} bytes:{bytes}");
+    pr!("test server {:?}", server);
+    let bytes = test_multithread(&server.host, download_duration, &download_sizes, download_threads, test_download)?;
+    let download_mbps = (bytes as f32) * 8.0 / 1000.0 / (download_duration.as_millis() as f32);
+    pr!("download mbps:{download_mbps} bytes:{bytes}");
 
-    url_upload(&server.host, "speedtest/upload.php", upload_duration, 1000)?;
+    // allow some time for downloads to stop
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    let bytes = test_multithread(&server.host, upload_duration, &upload_sizes, upload_threads, test_upload)?;
+    let upload_mbps = (bytes as f32) * 8.0 / 1000.0 / (upload_duration.as_millis() as f32);
+    pr!("upload mbps:{upload_mbps} bytes:{bytes}");
+//    url_upload(&server.host, "speedtest/upload.php", upload_duration, 1000)?;
 
     let timestamp = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() as u32;
     Ok(SpeedTestResult {
 	timestamp: timestamp,
 	latency: server.latency,
-	download: 0.0,
-	upload: 0.0,
+	download: download_mbps,
+	upload: upload_mbps,
 	client_public_ip: client_ip,
 	client_isp: client_isp,
 	server: server.clone(),
