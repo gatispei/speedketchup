@@ -97,7 +97,7 @@ impl Default for Ipv6Addr {
 struct SpeedTestServer {
     descr: String,
     host: String,
-    url: String,
+//    url: String,
     id: u32,
     distance: f32,
     latency: u32,
@@ -216,7 +216,6 @@ where
 Host: {host}\r
 User-Agent: {PKG_NAME}/{PKG_VERSION}\r
 Accept: */*\r
-Cache-Control: no-cache\r
 Connection: close\r
 {extra_headers}\r
 ");
@@ -404,7 +403,7 @@ fn test_download(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>
 	    Some(t) => {
 		let size = sizes[i];
 		let path = format!("speedtest/random{size}x{size}.jpg");
-		match http_request(host_str, &path, "GET", "", t, 0, |buf| bytes += buf.len()) {
+		match http_request(host_str, &path, "GET", "Cache-Control: no-cache\r\n", t, 0, |buf| bytes += buf.len()) {
 		    Err(err) => pr!("http error: {err}"),
 		    Ok(_) => ()
 		}
@@ -482,13 +481,11 @@ fn test_multithread(
 }
 
 fn speedtest() -> Result<SpeedTestResult, ErrorString> {
-    pr!("download_configuration");
-    let dur = std::time::Duration::from_secs(3);
+    pr!("speedtest");
     let resp = http_get_follow_redirects("www.speedtest.net", "/speedtest-config.php")?;
 //    pr!("status:{} body:{}", http_status_code(&resp)?, http_body(&resp)?);
-
     let config_xml = http_body(&resp)?;
-    pr!("config_xml: {}", config_xml);
+//    pr!("config_xml: {}", config_xml);
     let config = roxmltree::Document::parse(&config_xml)?;
     pr!("config_xml.len(): {:?}", config_xml.len());
 
@@ -587,10 +584,9 @@ fn speedtest() -> Result<SpeedTestResult, ErrorString> {
             Some(SpeedTestServer {
 		descr: format!("{}, {}, {}", sponsor, name, country),
                 host: n.attribute("host")?.to_string(),
-                url: n.attribute("url")?.to_string(),
+//                url: n.attribute("url")?.to_string(),
                 id: n.attribute("id")?.parse().ok()?,
                 distance: client_location.distance(&lll) * DEGREES_TO_KM,
-//		location: lll,
 		latency: u32::MAX,
             })
         })
@@ -629,6 +625,10 @@ fn speedtest() -> Result<SpeedTestResult, ErrorString> {
     })
 }
 
+fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
+//    let data: Vec<u8> = std::fs::read("db.txt").unwrap();
+}
+
 /*
 #[derive(Debug)]
 struct Config<'src> {
@@ -649,18 +649,83 @@ fn parse_config<'cfg>(config: &'cfg str) -> Config<'cfg> {
 }
  */
 
+const HELP: &str = "usage: speedtest [options]
+	-h|--help: print this
+	-v|--version: print version
+	-i|--interval <minutes>: set test interval in minutes, 10 by default
+	-s|--store <filename>: file to store test results in, results.csv by default";
 fn main() {
-//    pr!("sizeof opt: {}", std::mem::size_of::<Option<u128>>());
-    std::env::set_var("RUST_BACKTRACE", "1");
-
-    let result = match speedtest() {
-	Err(err) => {
-	    pr!("speedtest error: {}", err);
-	    return;
+    let mut test_interval: u64 = 10;
+    let mut store_filename = "results.csv";
+    let args = std::env::args().collect::<Vec<_>>();
+    let mut it = args.iter();
+    it.next();
+    while let Some(arg) = it.next() {
+	match arg.as_str() {
+	    "-h" | "--help" => {
+		println!("{HELP}");
+		std::process::exit(0);
+	    },
+	    "-v" | "--version" => {
+		println!("{PKG_VERSION}");
+		std::process::exit(0);
+	    },
+	    "-i" | "--interval" => {
+		test_interval = match it.next() {
+		    Some(x) => match x.parse() {
+			Ok(i) => i,
+			Err(_) => {
+			    println!("bad interval");
+			    std::process::exit(-1);
+			}
+		    },
+		    None => {
+			println!("no interval given");
+			std::process::exit(0);
+		    }
+		}
+	    },
+	    "-s" | "--store" => {
+		store_filename = match it.next() {
+		    Some(x) => x,
+		    None => {
+			println!("no interval given");
+			std::process::exit(0);
+		    }
+		}
+	    },
+	    _ => {
+		println!("unknown arg '{}'", arg);
+		println!("{HELP}");
+		std::process::exit(-1);
+	    }
 	}
-	Ok(r) => r
-    };
-    pr!("result: {:#?}", result);
+    }
+
+    std::env::set_var("RUST_BACKTRACE", "1");
+    pr!("interval: {test_interval}m");
+    pr!("store_filename: {store_filename}");
+    let test_interval = std::time::Duration::from_secs(test_interval * 60);
+    loop {
+	let now = std::time::Instant::now();
+	let result = speedtest();
+	match &result {
+	    Err(err) => {
+		pr!("error: {}", err);
+	    }
+	    Ok(r) => {
+		pr!("result: {:#?}", r);
+	    }
+	};
+	save_result(&store_filename, &result);
+	match test_interval.checked_sub(now.elapsed()) {
+	    Some(dur) => {
+		pr!("sleep for {:?}", dur);
+		std::thread::sleep(dur);
+	    },
+	    None => ()
+	}
+    }
 
 //    let data: Vec<u8> = std::fs::read("db.txt").unwrap();
 //    pr!("data.len: {:#?}", data.len());
