@@ -18,6 +18,14 @@ impl std::str::FromStr for Ipv6Addr {
 //	std::net::Ipv6Addr::from_str(s).map(|v| Ipv6Addr(v) )
     }
 }
+impl std::fmt::Display for Ipv6Addr {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+	match self.0.to_ipv4_mapped() {
+	    None => write!(f, "{}", self.0),
+	    Some(ip) => write!(f, "{}", ip),
+	}
+    }
+}
 
 
 struct ErrorString(String);
@@ -159,7 +167,8 @@ fn url_get_latency(host: &str, path: &str) -> Result<u32, ErrorString> {
 	.collect();
     let mut lat = u32::MAX;
     if latencies.len() > 0 {
-	lat = latencies.iter().sum::<u32>() / latencies.len() as u32;
+	// assume 2 roundtrips per http request
+	lat = latencies.iter().sum::<u32>() / 2 / latencies.len() as u32;
     }
     pr!("result {}: {:?} / {}", path, lat, latencies.len());
     Ok(lat)
@@ -346,6 +355,7 @@ fn http_body(resp: &str) -> Result<String, ErrorString> {
     Ok(body_str)
 }
 
+/*
 const HTTP: &str = "http";
 fn url_proto(url: &str) -> &str {
     match url.find("://") {
@@ -353,6 +363,7 @@ fn url_proto(url: &str) -> &str {
 	Some(i) => &url[0..i]
     }
 }
+*/
 fn url_host_and_path(url: &str) -> (&str, &str) {
     let start_idx = match url.find("://") {
 	None => 0,
@@ -458,8 +469,7 @@ fn test_multithread(
 	Some(std::thread::Builder::new().name(format!("test{i}")).spawn(move || -> usize {
 	    match func(&sh, duration, &ds) {
 		Ok(bytes) => {
-		    let mbps = (bytes as f32) * 8.0 / 1000.0 / (duration.as_millis() as f32);
-		    pr!("mbps:{mbps} bytes:{bytes}");
+		    pr!("bytes:{bytes}");
 		    bytes
 		},
 		Err(err) => {
@@ -582,7 +592,7 @@ fn speedtest() -> Result<SpeedTestResult, ErrorString> {
             let name = n.attribute("name")?;
 	    let sponsor = n.attribute("sponsor")?;
             Some(SpeedTestServer {
-		descr: format!("{}, {}, {}", sponsor, name, country),
+		descr: format!("{}/{}/{}", sponsor, name, country),
                 host: n.attribute("host")?.to_string(),
 //                url: n.attribute("url")?.to_string(),
                 id: n.attribute("id")?.parse().ok()?,
@@ -602,14 +612,14 @@ fn speedtest() -> Result<SpeedTestResult, ErrorString> {
     let server = servers.iter().next().ok_or("no server")?;
     pr!("test server {:?}", server);
     let bytes = test_multithread(&server.host, download_duration, &download_sizes, download_threads, test_download)?;
-    let download_mbps = (bytes as f32) * 8.0 / 1000.0 / (download_duration.as_millis() as f32);
+    let download_mbps = (bytes as u64 * 8 / download_duration.as_millis() as u64) as f32 / 1000.0;
     pr!("download mbps:{download_mbps} bytes:{bytes}");
 
     // allow some time for downloads to stop
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     let bytes = test_multithread(&server.host, upload_duration, &upload_sizes, upload_threads, test_upload)?;
-    let upload_mbps = (bytes as f32) * 8.0 / 1000.0 / (upload_duration.as_millis() as f32);
+    let upload_mbps = (bytes as u64 * 8 / upload_duration.as_millis() as u64) as f32 / 1000.0;
     pr!("upload mbps:{upload_mbps} bytes:{bytes}");
 //    url_upload(&server.host, "speedtest/upload.php", upload_duration, 1000)?;
 
@@ -625,8 +635,27 @@ fn speedtest() -> Result<SpeedTestResult, ErrorString> {
     })
 }
 
+const CSV_COLS: &str = "Timestamp,Latency(ms),Download(Mbps),Upload(Mbps),ClientPublicIP,ClientISP,ServerDescr,ServerHost,Error\n";
 fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
-//    let data: Vec<u8> = std::fs::read("db.txt").unwrap();
+    let str = match result {
+	Ok(r) => format!("{},{},{},{},{},\"{}\",\"{}\",{},\n", r.timestamp, r.latency, r.download, r.upload, r.client_public_ip, r.client_isp, r.server.descr, r.server.host),
+	Err(e) => format!(",,,,,,,,{e}\n"),
+    };
+    let path = std::path::Path::new(file);
+    if path.exists() == false {
+	if std::fs::write(file, CSV_COLS).is_err() {
+	    exit(&format!("cannot write to {}", file), -1);
+	}
+    }
+
+    match std::fs::OpenOptions::new().write(true).append(true).open(file) {
+	Err(e) => exit(&format!("cannot open {file}: {}", e), -1),
+	Ok(mut f) => {
+	    if let Err(e) = std::io::Write::write(&mut f, str.as_bytes()) {
+		pr!("cannot write to {file}: {}", e);
+	    }
+	},
+    }
 }
 
 /*
@@ -654,6 +683,10 @@ const HELP: &str = "usage: speedtest [options]
 	-v|--version: print version
 	-i|--interval <minutes>: set test interval in minutes, 10 by default
 	-s|--store <filename>: file to store test results in, results.csv by default";
+fn exit(str: &str, code: i32) -> ! {
+    eprintln!("{}", str);
+    std::process::exit(code);
+}
 fn main() {
     let mut test_interval: u64 = 10;
     let mut store_filename = "results.csv";
@@ -662,43 +695,24 @@ fn main() {
     it.next();
     while let Some(arg) = it.next() {
 	match arg.as_str() {
-	    "-h" | "--help" => {
-		println!("{HELP}");
-		std::process::exit(0);
-	    },
-	    "-v" | "--version" => {
-		println!("{PKG_VERSION}");
-		std::process::exit(0);
-	    },
+	    "-h" | "--help" => exit(HELP, 0),
+	    "-v" | "--version" => exit(PKG_VERSION, 0),
 	    "-i" | "--interval" => {
 		test_interval = match it.next() {
 		    Some(x) => match x.parse() {
 			Ok(i) => i,
-			Err(_) => {
-			    println!("bad interval");
-			    std::process::exit(-1);
-			}
+			Err(_) => exit("bad interval", -1),
 		    },
-		    None => {
-			println!("no interval given");
-			std::process::exit(0);
-		    }
+		    None => exit("no interval given", -1),
 		}
 	    },
 	    "-s" | "--store" => {
 		store_filename = match it.next() {
 		    Some(x) => x,
-		    None => {
-			println!("no interval given");
-			std::process::exit(0);
-		    }
+		    None => exit("no filename given", -1),
 		}
 	    },
-	    _ => {
-		println!("unknown arg '{}'", arg);
-		println!("{HELP}");
-		std::process::exit(-1);
-	    }
+	    _ => exit(&format!("unknown arg '{}'", arg), -1),
 	}
     }
 
