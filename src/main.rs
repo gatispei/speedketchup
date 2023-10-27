@@ -32,8 +32,8 @@ impl From<&str> for ErrorString {
         ErrorString(err.to_string())
     }
 }
-impl From<ureq::Error> for ErrorString {
-    fn from(err: ureq::Error) -> ErrorString {
+impl From<std::str::Utf8Error> for ErrorString {
+    fn from(err: std::str::Utf8Error) -> ErrorString {
         ErrorString(err.to_string())
     }
 }
@@ -153,7 +153,7 @@ fn url_get_latency(host: &str, path: &str) -> Result<u32, ErrorString> {
 	|_i|
 	duration(|| {
 	    let dur = std::time::Duration::from_secs(1);
-	    Ok(http_request(host, path, "GET", "", dur, 0, |_| ())?)
+	    Ok(http_request(host, path, "GET", "", dur, 0, dummy_cb)?)
 	}).ok()
     )
 	.collect();
@@ -186,6 +186,9 @@ fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>) -> Result<(), Err
     Ok(())
 }
 
+fn dummy_cb(_: &[u8]) {
+}
+//#[inline(never)]
 fn http_request<READ>(
     host: &str,
     path: &str,
@@ -199,7 +202,10 @@ where
     READ: FnMut(&[u8]) -> ()
 {
     let now = std::time::Instant::now();
-    let sock_addr = std::net::ToSocketAddrs::to_socket_addrs(host)?.next().ok_or("no addr")?;
+    let sock_addr = match std::net::ToSocketAddrs::to_socket_addrs(host) {
+	Ok(x) => x,
+	Err(_) => std::net::ToSocketAddrs::to_socket_addrs(&(host, 80))?
+    }.next().ok_or("no addr")?;
 //    pr!("http_request {host} {path} {method} {sock_addr} {:?} {send_data_size}", duration);
     let mut tcp_stream = std::net::TcpStream::connect_timeout(&sock_addr, duration)?;
 
@@ -281,6 +287,111 @@ Connection: close\r
     Ok(bytes_written)
 }
 
+fn http_get(host: &str, path: &str) -> Result<String, ErrorString> {
+    let dur = std::time::Duration::from_secs(3);
+    let mut resp: Vec<u8> = Vec::new();
+    http_request(host, path, "GET", "", dur, 0, |buf| {
+	resp.extend_from_slice(buf);
+    })?;
+    Ok(std::str::from_utf8(&resp)?.to_string())
+}
+fn http_status_code(resp: &str) -> Result<u32, ErrorString> {
+    Ok(resp.split(' ').nth(1).ok_or("no status code")?.parse::<u32>()?)
+}
+fn http_headers<CB>(resp: &str, mut cb: CB) where
+    CB: FnMut(&str, &str) -> () {
+    for header in resp.lines() {
+	if header.len() == 0 {
+	    break;
+	}
+	let split_at = match header.find(": ") {
+	    Some(x) => x,
+	    None => continue
+	};
+	let hdr_type = &header[0..split_at];
+	let hdr_val = &header[split_at + 2..];
+	//	pr!("heade2: '{hdr_type}' '{hdr_val}'");
+	cb(hdr_type, hdr_val);
+    }
+}
+fn http_body(resp: &str) -> Result<String, ErrorString> {
+    let mut body = &resp[resp.find("\r\n\r\n").ok_or("no body")? + 4..];
+    let mut chunked = false;
+    http_headers(resp, |hdr_type, hdr_val| {
+	if hdr_type.to_lowercase() == "transfer-encoding" && hdr_val.to_lowercase() == "chunked" {
+	    chunked = true;
+	}
+    });
+//    pr!("chunked: {chunked}");
+    if chunked == false {
+	return Ok(String::from(body));
+    }
+
+    let mut body_str = String::new();
+    loop {
+	let chunk_size_slice: &str = &body[0..body.find(|c| c == ';' || c == '\r').ok_or("bad chunk len")?];
+	let chunk_size = usize::from_str_radix(chunk_size_slice, 16)?;
+	if chunk_size == 0 {
+	    break;
+	}
+	body = &body[body.find("\r\n").ok_or("no chunk start")? + 2..];
+	if chunk_size + 2 > body.len() {
+	    return Err("chunk size too big".into());
+	}
+	body_str += &body[0..chunk_size];
+	body = &body[chunk_size + 2..];
+	if body.len() == 0 {
+	    break;
+	}
+    }
+    Ok(body_str)
+}
+
+const HTTP: &str = "http";
+fn url_proto(url: &str) -> &str {
+    match url.find("://") {
+	None => HTTP,
+	Some(i) => &url[0..i]
+    }
+}
+fn url_host_and_path(url: &str) -> (&str, &str) {
+    let start_idx = match url.find("://") {
+	None => 0,
+	Some(i) => i + 3
+    };
+    let end_idx = match url[start_idx..].find('/') {
+	None => url.len(),
+	Some(i) => start_idx + i
+    };
+    (&url[start_idx..end_idx], &url[end_idx..])
+}
+
+fn http_get_follow_redirects(host: &str, path: &str) -> Result<String, ErrorString> {
+    let mut resp;
+    let mut h = host.to_string();
+    let mut p = path.to_string();
+    loop {
+	resp = http_get(&h, &p)?;
+	match http_status_code(&resp)? {
+	    301 | 302 | 303 | 307 | 308 => (),
+	    _ => return Ok(resp)
+	};
+	let mut loc = false;
+	http_headers(&resp, |hdr_type, hdr_val| {
+	    if hdr_type.to_lowercase() == "location" {
+		let (hh, pp) = url_host_and_path(hdr_val);
+		pr!("follow redirect to {hh} {pp}");
+		h = hh.to_string();
+		p = pp.to_string();
+		loc = true;
+	    }
+	});
+	if loc == false {
+	    return Ok(resp);
+	}
+    }
+}
+
 fn test_download(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>) -> Result<usize, ErrorString> {
     let mut bytes = 0;
     let now = std::time::Instant::now();
@@ -318,7 +429,7 @@ fn test_upload(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>) 
 	    Some(t) => {
 		let size = sizes[i];
 		let path = "speedtest/upload.php";
-		bytes += match http_request(host_str, &path, "POST", &format!("Content-Length: {size}\r\n"), t, size as usize, |_| ()) {
+		bytes += match http_request(host_str, &path, "POST", &format!("Content-Length: {size}\r\n"), t, size as usize, dummy_cb) {
 		    Err(err) => {
 			pr!("http error: {err}");
 			0
@@ -373,13 +484,11 @@ fn test_multithread(
 fn speedtest() -> Result<SpeedTestResult, ErrorString> {
     pr!("download_configuration");
     let dur = std::time::Duration::from_secs(3);
-    let agent = ureq::AgentBuilder::new()
-	.timeout_connect(dur)
-	.timeout_read(dur)
-	.timeout_write(dur)
-	.build();
-    let config_xml: String = agent.get("http://www.speedtest.net/speedtest-config.php")
-        .call()?.into_string()?;
+    let resp = http_get_follow_redirects("www.speedtest.net", "/speedtest-config.php")?;
+//    pr!("status:{} body:{}", http_status_code(&resp)?, http_body(&resp)?);
+
+    let config_xml = http_body(&resp)?;
+    pr!("config_xml: {}", config_xml);
     let config = roxmltree::Document::parse(&config_xml)?;
     pr!("config_xml.len(): {:?}", config_xml.len());
 
@@ -461,8 +570,7 @@ fn speedtest() -> Result<SpeedTestResult, ErrorString> {
         .to_string();
 
 
-    let servers_xml: String = agent.get("http://www.speedtest.net/speedtest-servers.php")
-        .call()?.into_string()?;
+    let servers_xml = http_body(&http_get_follow_redirects("www.speedtest.net", "/speedtest-servers.php")?)?;
     let servers = roxmltree::Document::parse(&servers_xml)?;
     pr!("servers_xml.len(): {:?}", servers_xml.len());
     let mut servers: Vec<_> = servers
