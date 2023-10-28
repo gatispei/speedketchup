@@ -113,7 +113,7 @@ struct SpeedTestServer {
 
 #[derive(Debug)]
 struct SpeedTestResult {
-    timestamp: u32,
+//    timestamp: u32,
     latency: u32,
     download: f32,
     upload: f32,
@@ -132,9 +132,12 @@ fn type_of<T>(_: &T) -> &'static str {
 
 fn timestr() -> String {
     let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
-    format!("{}.{:0>3}",
-	    libc_strftime::strftime_local("%Y.%m.%d-%H:%M:%S", d.as_secs() as i64),
-	    d.subsec_millis())
+    format!("{}", libc_strftime::strftime_gmt("%Y.%m.%d-%H:%M:%S", d.as_secs() as i64))
+}
+
+fn timestr_millis() -> String {
+    let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    format!("{}.{:0>3}", libc_strftime::strftime_gmt("%Y.%m.%d-%H:%M:%S", d.as_secs() as i64), d.subsec_millis())
 }
 
 macro_rules! pr {
@@ -144,7 +147,7 @@ macro_rules! pr {
 	    Some(n) => n,
 	    None => ""
 	};
-	print!("{} {tn}: ", timestr());
+	print!("{} {tn}: ", timestr_millis());
 	println!($($arg)*);
     }};
 }
@@ -312,12 +315,10 @@ fn http_headers<CB>(resp: &str, mut cb: CB) where
 	if header.len() == 0 {
 	    break;
 	}
-	let split_at = match header.find(": ") {
+	let (hdr_type, hdr_val) = match header.split_once(": ") {
 	    Some(x) => x,
 	    None => continue
 	};
-	let hdr_type = &header[0..split_at];
-	let hdr_val = &header[split_at + 2..];
 	//	pr!("heade2: '{hdr_type}' '{hdr_val}'");
 	cb(hdr_type, hdr_val);
     }
@@ -460,7 +461,7 @@ fn test_multithread(
     duration: std::time::Duration, sizes: &Vec<u32>,
     thread_count: u32,
     func: fn(&str, std::time::Duration, &Vec<u32>) -> Result<usize, ErrorString>)
-    -> Result<usize, ErrorString> {
+    -> Result<Vec<usize>, ErrorString> {
     pr!("test_multithread host:{host_str} duration:{:?} threads:{thread_count} func:{:?}", duration, func);
     let threads: Vec<_> = (0..thread_count).filter_map(|i| {
 	let sh: String = host_str.into();
@@ -469,7 +470,7 @@ fn test_multithread(
 	Some(std::thread::Builder::new().name(format!("test{i}")).spawn(move || -> usize {
 	    match func(&sh, duration, &ds) {
 		Ok(bytes) => {
-		    pr!("bytes:{bytes}");
+//		    pr!("bytes:{bytes}");
 		    bytes
 		},
 		Err(err) => {
@@ -479,11 +480,10 @@ fn test_multithread(
 	    }
 	}).ok()?)
     }).collect();
-    let mut bytes = 0;
+    let mut bytes = vec!();
     for thread in threads {
-//	bytes += thread.join()?;
 	match thread.join() {
-	    Ok(res) => bytes += res,
+	    Ok(res) => bytes.push(res),
 	    Err(err) => pr!("thread join failed: {:?}", err),
 	}
     }
@@ -612,20 +612,20 @@ fn speedtest() -> Result<SpeedTestResult, ErrorString> {
     let server = servers.iter().next().ok_or("no server")?;
     pr!("test server {:?}", server);
     let bytes = test_multithread(&server.host, download_duration, &download_sizes, download_threads, test_download)?;
-    let download_mbps = (bytes as u64 * 8 / download_duration.as_millis() as u64) as f32 / 1000.0;
-    pr!("download mbps:{download_mbps} bytes:{bytes}");
+    let download_mbps = (bytes.iter().sum::<usize>() as u64 * 8 / download_duration.as_millis() as u64) as f32 / 1000.0;
+    pr!("download mbps:{download_mbps} bytes:{:?}", bytes);
 
     // allow some time for downloads to stop
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     let bytes = test_multithread(&server.host, upload_duration, &upload_sizes, upload_threads, test_upload)?;
-    let upload_mbps = (bytes as u64 * 8 / upload_duration.as_millis() as u64) as f32 / 1000.0;
-    pr!("upload mbps:{upload_mbps} bytes:{bytes}");
+    let upload_mbps = (bytes.iter().sum::<usize>() as u64 * 8 / upload_duration.as_millis() as u64) as f32 / 1000.0;
+    pr!("upload mbps:{upload_mbps} bytes:{:?}", bytes);
 //    url_upload(&server.host, "speedtest/upload.php", upload_duration, 1000)?;
 
-    let timestamp = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() as u32;
+//    let timestamp = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() as u32;
     Ok(SpeedTestResult {
-	timestamp: timestamp,
+//	timestamp: timestamp,
 	latency: server.latency,
 	download: download_mbps,
 	upload: upload_mbps,
@@ -638,8 +638,8 @@ fn speedtest() -> Result<SpeedTestResult, ErrorString> {
 const CSV_COLS: &str = "Timestamp,Latency(ms),Download(Mbps),Upload(Mbps),ClientPublicIP,ClientISP,ServerDescr,ServerHost,Error\n";
 fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
     let str = match result {
-	Ok(r) => format!("{},{},{},{},{},\"{}\",\"{}\",{},\n", r.timestamp, r.latency, r.download, r.upload, r.client_public_ip, r.client_isp, r.server.descr, r.server.host),
-	Err(e) => format!(",,,,,,,,{e}\n"),
+	Ok(r) => format!("{},{},{},{},{},\"{}\",\"{}\",{},\n", timestr(), r.latency, r.download, r.upload, r.client_public_ip, r.client_isp, r.server.descr, r.server.host),
+	Err(e) => format!("{},,,,,,,,{e}\n", timestr()),
     };
     let path = std::path::Path::new(file);
     if path.exists() == false {
@@ -658,31 +658,41 @@ fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
     }
 }
 
-/*
-#[derive(Debug)]
-struct Config<'src> {
-    hostname: &'src str,
-    username: &'src str,
+fn server_connection(_stream: std::net::TcpStream) -> Result<(), ErrorString> {
+    pr!("new connection");
+    Ok(())
 }
-fn parse_config<'cfg>(config: &'cfg str) -> Config<'cfg> {
-    let key_values: std::collections::HashMap<_, _> = config
-        .lines()
-        .filter(|line| !line.starts_with('#'))
-        .filter_map(|line| line.split_once('='))
-        .map(|(key, value)| (key.trim(), value.trim()))
-        .collect();
-    Config {
-        hostname: key_values["hostname"],
-        username: key_values["username"],
+fn server(listener: std::net::TcpListener) {
+    for stream in listener.incoming() {
+	match stream {
+	    Ok(s) => {
+		let peer_addr = match s.peer_addr() {
+		    Err(e) => {
+			pr!("bad peer addr {e}");
+			continue;
+		    }
+		    Ok(x) => x,
+		};
+		if let Err(e) = std::thread::Builder::new().name(format!("server-conn-{peer_addr}")).spawn(move || {
+		    if let Err(e) = server_connection(s) {
+			pr!("error: {e}");
+		    }
+		}) {
+		    pr!("thread failed {e}");
+		}
+	    },
+	    Err(e) => pr!("connection failed {e}")
+	}
     }
 }
- */
 
 const HELP: &str = "usage: speedtest [options]
 	-h|--help: print this
 	-v|--version: print version
 	-i|--interval <minutes>: set test interval in minutes, 10 by default
-	-s|--store <filename>: file to store test results in, results.csv by default";
+	-s|--store <filename>: file to store test results in, results.csv by default
+	-a|--address <ip>: address to listen on for incoming connections, 127.0.0.1 by default
+	-p|--port <port>: port to listen on for incoming connections, 8080 by default";
 fn exit(str: &str, code: i32) -> ! {
     eprintln!("{}", str);
     std::process::exit(code);
@@ -690,6 +700,8 @@ fn exit(str: &str, code: i32) -> ! {
 fn main() {
     let mut test_interval: u64 = 10;
     let mut store_filename = "results.csv";
+    let mut server_port: u16 = 8080;
+    let mut server_address = "127.0.0.1";
     let args = std::env::args().collect::<Vec<_>>();
     let mut it = args.iter();
     it.next();
@@ -712,6 +724,21 @@ fn main() {
 		    None => exit("no filename given", -1),
 		}
 	    },
+	    "-a" | "--address" => {
+		server_address = match it.next() {
+		    Some(x) => x,
+		    None => exit("no address given", -1),
+		}
+	    },
+	    "-p" | "--port" => {
+		server_port = match it.next() {
+		    Some(x) => match x.parse() {
+			Ok(i) => i,
+			Err(_) => exit("bad port", -1),
+		    },
+		    None => exit("no port given", -1),
+		}
+	    },
 	    _ => exit(&format!("unknown arg '{}'", arg), -1),
 	}
     }
@@ -719,16 +746,27 @@ fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");
     pr!("interval: {test_interval}m");
     pr!("store_filename: {store_filename}");
+
+    let listener = match std::net::TcpListener::bind((server_address, server_port)) {
+	Err(e) => exit(&format!("could not bind: {}", e), -1),
+	Ok(l) => l
+    };
+    let _ = std::thread::Builder::new().name("server".to_string()).spawn(move || {
+	server(listener);
+    });
+
     let test_interval = std::time::Duration::from_secs(test_interval * 60);
     loop {
 	let now = std::time::Instant::now();
 	let result = speedtest();
 	match &result {
 	    Err(err) => {
-		pr!("error: {}", err);
+		pr!("speedtest error:{}", err);
 	    }
 	    Ok(r) => {
-		pr!("result: {:#?}", r);
+//		pr!("result: {:#?}", r);
+		pr!("speedtest latency:{}ms download:{}Mbps upload:{}Mbps client_public_ip:{} client_isp:{} server_descr:{} server_host:{}",
+		    r.latency, r.download, r.upload, r.client_public_ip, r.client_isp, r.server.descr, r.server.host);
 	    }
 	};
 	save_result(&store_filename, &result);
@@ -740,16 +778,6 @@ fn main() {
 	    None => ()
 	}
     }
-
-//    let data: Vec<u8> = std::fs::read("db.txt").unwrap();
-//    pr!("data.len: {:#?}", data.len());
-//    pr!("data.capacity: {:#?}", data.capacity());
-
-//    let config = parse_config(
-//        r#"hostname = foobar
-//username=barfoo"#,
-//    );
-//    pr!("Parsed config: {} {} {:?}", config.hostname, config.username, config);
 }
 
 /*
