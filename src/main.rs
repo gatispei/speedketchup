@@ -130,14 +130,60 @@ fn type_of<T>(_: &T) -> &'static str {
     return std::any::type_name::<T>();
 }
 
+mod c {
+    extern "C" {
+        pub(crate) fn strftime(
+            s: *mut libc::c_char,
+            max: libc::size_t,
+            format: *const libc::c_char,
+            tm: *const libc::tm,
+        ) -> usize;
+//        pub(crate) fn time(tloc: *const libc::time_t) -> libc::time_t;
+        pub(crate) fn gmtime_r(t: *const libc::time_t, tm: *mut libc::tm);
+	pub(crate) fn timegm(tm: *const libc::tm) -> libc::time_t;
+    }
+}
+//use std::ffi::CString;
+pub fn strftime_gmt(format: &str, epoch: libc::time_t) -> String {
+    let now = unsafe {
+	let mut now: libc::tm = std::mem::zeroed();
+        c::gmtime_r(&epoch, &mut now);
+	now
+    };
+    let f = std::ffi::CString::new(format).unwrap();
+    let buf = [0_u8; 100];
+    let l: usize = unsafe { c::strftime(buf.as_ptr() as _, buf.len(), f.as_ptr() as *const _, &now) };
+    std::string::String::from_utf8_lossy(&buf[..l]).to_string()
+}
+
 fn timestr() -> String {
     let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
-    format!("{}", libc_strftime::strftime_gmt("%Y.%m.%d-%H:%M:%S", d.as_secs() as i64))
+    format!("{}", strftime_gmt("%Y.%m.%d-%H:%M:%S", d.as_secs() as i64))
 }
 
 fn timestr_millis() -> String {
     let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
-    format!("{}.{:0>3}", libc_strftime::strftime_gmt("%Y.%m.%d-%H:%M:%S", d.as_secs() as i64), d.subsec_millis())
+    format!("{}.{:0>3}", strftime_gmt("%Y.%m.%d-%H:%M:%S", d.as_secs() as i64), d.subsec_millis())
+}
+
+fn parse_timestr(str: &str) -> Result<u32, ErrorString> {
+    let mut i = str.split("-");
+    let date: Vec<_> = i.next().ok_or("no date")?.split(".").collect();
+    let time: Vec<_> = i.next().ok_or("no time")?.split(":").collect();
+
+    let x = unsafe {
+	let mut tm: libc::tm = std::mem::zeroed();
+	tm.tm_year = date[0].parse()?;
+	tm.tm_year -= 1900;
+	tm.tm_mon = date[1].parse()?;
+	tm.tm_mday = date[2].parse()?;
+	tm.tm_hour = time[0].parse()?;
+	tm.tm_min = time[1].parse()?;
+	tm.tm_sec = time[2].parse()?;
+        c::timegm(&tm) as u32
+    };
+
+    Ok(x)
 }
 
 macro_rules! pr {
@@ -674,17 +720,58 @@ const ASSET_FAVICON_SVG: &str = include_str!("../asset/favicon.svg");
 const ASSET_UPLOT_JS: &str = include_str!("../asset/uplot.js");
 const ASSET_UPLOT_CSS: &str = include_str!("../asset/uplot.css");
 
-fn server_request(url: &[u8], mut stream: &mut std::net::TcpStream) -> Result<(), ErrorString> {
+fn server_get_data(store_filename: &str) -> Result<String, ErrorString> {
+    let data = &std::fs::read(store_filename)?;
+    let mut it = std::str::from_utf8(data)?.lines();
+    it.next();
+    let mut timestamps: Vec<u32> = vec!();
+    let mut latencies: Vec<u32> = vec!();
+    let mut downloads: Vec<f32> = vec!();
+    let mut uploads: Vec<f32> = vec!();
+    while let Some(line) = it.next() {
+	let x: Vec<_> = line.split(",").take(4).collect();
+	if x.len() < 4 {
+	    continue;
+	}
+	let time = match parse_timestr(x[0]) {
+	    Err(_) => continue,
+	    Ok(t) => t,
+	};
+	let latency = match x[1].parse::<u32>() {
+	    Err(_) => continue,
+	    Ok(t) => t,
+	};
+	let dl = match x[2].parse::<f32>() {
+	    Err(_) => continue,
+	    Ok(t) => t,
+	};
+	let ul = match x[3].parse::<f32>() {
+	    Err(_) => continue,
+	    Ok(t) => t,
+	};
+	timestamps.push(time);
+	latencies.push(latency);
+	downloads.push(dl);
+	uploads.push(ul);
+    }
+    Ok(format!("let netwatchData = [{:?}, {:?}, {:?}, {:?}];", timestamps, latencies, downloads, uploads))
+}
+fn server_request(url: &[u8], mut stream: &mut std::net::TcpStream, store_filename: &str) -> Result<(), ErrorString> {
     let duration = std::time::Duration::from_secs(10);
     let now = std::time::Instant::now();
     let url = std::str::from_utf8(url)?;
     pr!("request {url}");
+    let mut _chart_data: String = String::new();
 
     let (data, content_type) = match url {
 	"/" => (ASSET_INDEX_HTML, "text/html; charset=utf-8"),
 	"/favicon.svg" => (ASSET_FAVICON_SVG, "image/svg+xml"),
 	"/uplot.js" => (ASSET_UPLOT_JS, "text/javascript"),
 	"/uplot.css" => (ASSET_UPLOT_CSS, "text/css"),
+	"/data.js" => {
+	    _chart_data = server_get_data(store_filename)?;
+	    (_chart_data.as_str(), "text/javascript")
+	}
 	_ => ("404", "text/html"),
     };
 
@@ -727,7 +814,7 @@ Content-Length: {}\r
     Ok(())
 }
 
-fn server_connection(mut stream: std::net::TcpStream) -> Result<(), ErrorString> {
+fn server_connection(mut stream: std::net::TcpStream, store_filename: &str) -> Result<(), ErrorString> {
     pr!("new connection");
     let duration = std::time::Duration::from_secs(10);
     let mut now = std::time::Instant::now();
@@ -758,7 +845,7 @@ fn server_connection(mut stream: std::net::TcpStream) -> Result<(), ErrorString>
 		    match iter.next() {
 			Some(b"GET") => {
 			    match iter.next() {
-				Some(url) => server_request(url, &mut stream)?,
+				Some(url) => server_request(url, &mut stream, store_filename)?,
 				_ => return Err("bad request url".into()),
 			    }
 			}
@@ -780,7 +867,7 @@ fn server_connection(mut stream: std::net::TcpStream) -> Result<(), ErrorString>
 
 
 //use std::os::fd::AsRawFd;
-fn server(listener: std::net::TcpListener) {
+fn server(listener: std::net::TcpListener, store_filename: &str) {
     unsafe {
 	let optval: libc::c_int = 1;
 	let ret = libc::setsockopt(
@@ -805,8 +892,9 @@ fn server(listener: std::net::TcpListener) {
 		    }
 		    Ok(x) => x,
 		};
+		let sf = store_filename.to_string().clone();
 		if let Err(e) = std::thread::Builder::new().name(format!("server-conn-{peer_addr}")).spawn(move || {
-		    if let Err(e) = server_connection(s) {
+		    if let Err(e) = server_connection(s, &sf) {
 			pr!("error: {e}");
 		    }
 		}) {
@@ -883,8 +971,9 @@ fn main() {
 	Err(e) => exit(&format!("could not bind {server_address}:{server_port}: {}", e), -1),
 	Ok(l) => l
     };
+    let sf = store_filename.to_string().clone();
     let _ = std::thread::Builder::new().name("server".to_string()).spawn(move || {
-	server(listener);
+	server(listener, &sf);
     });
 
     let test_interval = std::time::Duration::from_secs(test_interval * 60);
