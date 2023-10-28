@@ -1,0 +1,49 @@
+<html>
+ <head>
+  <title>Netwatch</title>
+   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+   <link rel="stylesheet" type="text/css" href="uplot.css">
+   <script type="text/javascript" src="uplot.js"></script>
+ </head>
+ <body>
+   <script type="text/javascript">
+function getSize() {
+    return {
+	width: window.innerWidth,
+	height: (window.innerHeight / 2).toFixed(),
+    }
+}
+
+let opts = {
+    ...getSize(),
+    series: [
+	{},
+	{
+	    spanGaps: false,
+	    label: "Download",
+//	    value: (self, rawValue) => "$" + rawValue.toFixed(2),
+	    stroke: "red",
+	    width: 1,
+	    fill: "rgba(255, 0, 0, 0.1)",
+	},
+	{
+	    spanGaps: false,
+	    label: "Upload",
+//	    value: (self, rawValue) => "$" + rawValue.toFixed(2),
+	    stroke: "blue",
+	    width: 1,
+	    fill: "rgba(0, 0, 255, 0.1)",
+	}
+    ],
+};
+let data = [
+    [1546300800, 1546387200],    // x-values (timestamps)
+    [        35,         71],    // y-values (series 1)
+];
+let uplot = new uPlot(opts, data, document.body);
+window.addEventListener("resize", e => {
+    uplot.setSize(getSize());
+});
+   </script>
+ </body>
+</html>

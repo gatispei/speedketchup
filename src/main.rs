@@ -669,15 +669,28 @@ fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
     }
 }
 
+const ASSET_INDEX_HTML: &str = include_str!("../asset/index.html");
+const ASSET_FAVICON_SVG: &str = include_str!("../asset/favicon.svg");
+const ASSET_UPLOT_JS: &str = include_str!("../asset/uplot.js");
+const ASSET_UPLOT_CSS: &str = include_str!("../asset/uplot.css");
+
 fn server_request(url: &[u8], mut stream: &mut std::net::TcpStream) -> Result<(), ErrorString> {
     let duration = std::time::Duration::from_secs(10);
     let now = std::time::Instant::now();
     let url = std::str::from_utf8(url)?;
     pr!("request {url}");
 
-    let data = "Hello world!";
+    let (data, content_type) = match url {
+	"/" => (ASSET_INDEX_HTML, "text/html; charset=utf-8"),
+	"/favicon.svg" => (ASSET_FAVICON_SVG, "image/svg+xml"),
+	"/uplot.js" => (ASSET_UPLOT_JS, "text/javascript"),
+	"/uplot.css" => (ASSET_UPLOT_CSS, "text/css"),
+	_ => ("404", "text/html"),
+    };
+
+//    let data = "Hello world!";
     let resp_str = format!("HTTP/1.1 200 OK\r
-Content-Type: text/html; charset=utf-8\r
+Content-Type: {content_type}\r
 Content-Length: {}\r
 \r
 {}", data.len(), data);
