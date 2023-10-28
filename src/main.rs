@@ -669,16 +669,61 @@ fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
     }
 }
 
+fn server_request(url: &[u8], mut stream: &mut std::net::TcpStream) -> Result<(), ErrorString> {
+    let duration = std::time::Duration::from_secs(10);
+    let now = std::time::Instant::now();
+    let url = std::str::from_utf8(url)?;
+    pr!("request {url}");
+
+    let data = "Hello world!";
+    let resp_str = format!("HTTP/1.1 200 OK\r
+Content-Type: text/html; charset=utf-8\r
+Content-Length: {}\r
+\r
+{}", data.len(), data);
+    let resp = resp_str.as_bytes();
+    let mut bytes_written = 0;
+
+    // send post data
+    loop {
+	if bytes_written >= resp.len() {
+	    break;
+	}
+	let timeout = duration.checked_sub(now.elapsed());
+	if timeout.is_none() {
+	    return Err("write timeout".into());
+	}
+	stream.set_write_timeout(timeout)?;
+	match std::io::Write::write(&mut stream, &resp[bytes_written..]) {
+	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+	    Err(_err) => {
+		pr!("write {_err}");
+		break
+	    }
+	    Ok(ret) => {
+		if ret == 0 {
+		    return Err("write closed".into());
+		}
+//		pr!("write {ret}");
+		bytes_written += ret
+	    }
+	}
+    }
+
+    pr!("request done");
+    Ok(())
+}
+
 fn server_connection(mut stream: std::net::TcpStream) -> Result<(), ErrorString> {
     pr!("new connection");
     let duration = std::time::Duration::from_secs(10);
-    let now = std::time::Instant::now();
+    let mut now = std::time::Instant::now();
     let mut buf = [0_u8; 1024 * 8];
     let mut bytes_read = 0;
     loop {
 	let timeout = duration.checked_sub(now.elapsed());
 	if timeout.is_none() {
-	    return Err(ErrorString("read timeout".to_string()));
+	    return Err("read timeout".into());
 	}
 	stream.set_read_timeout(timeout)?;
 	match std::io::Read::read(&mut stream, &mut buf[bytes_read..]) {
@@ -689,13 +734,31 @@ fn server_connection(mut stream: std::net::TcpStream) -> Result<(), ErrorString>
 	    }
 	    Ok(bytes) => {
 		if bytes == 0 {
-		    return Err(ErrorString("read closed".to_string()));
+		    return Err("read closed".into());
 		}
 		bytes_read += bytes;
-		if let Some(hdrbuf_off) = memmem(&buf, b"\r\n\r\n") {
+		pr!("read {bytes_read}");
+		if let Some(hdrend_off) = memmem(&buf, b"\r\n\r\n") {
+		    let hdr = &buf[0..hdrend_off];
+//		    pr!("request: {}", std::str::from_utf8(hdr).unwrap());
+		    let mut iter = hdr.split(|c| *c == b' ');
+		    match iter.next() {
+			Some(b"GET") => {
+			    match iter.next() {
+				Some(url) => server_request(url, &mut stream)?,
+				_ => return Err("bad request url".into()),
+			    }
+			}
+			_ => return Err("bad request method".into()),
+		    }
+
+		    buf.copy_within((hdrend_off + 4)..bytes_read, 0);
+		    bytes_read -= hdrend_off + 4;
+		    now = std::time::Instant::now();
 		}
-//		read_cb(&buf[0..bytes_read]);
-//		pr!("read {bytes_read}");
+		if bytes_read >= buf.len() {
+		    return Err("read too long req".into());
+		}
 	    }
 	}
     }
