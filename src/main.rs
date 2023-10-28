@@ -1,6 +1,6 @@
 //#![no_std]
 //#![no_main]
-//extern crate libc;
+extern crate libc;
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -152,6 +152,11 @@ macro_rules! pr {
     }};
 }
 
+fn memmem<T>(haystack: &[T], needle: &[T]) -> Option<usize>
+where for<'a> &'a [T]: PartialEq {
+    haystack.windows(needle.len()).position(|window| window == needle)
+}
+
 fn duration<F, T>(work: F) -> Result<u32, ErrorString> where
     F: Fn() -> Result<T, ErrorString> {
     let now = std::time::Instant::now();
@@ -298,56 +303,59 @@ Connection: close\r
     Ok(bytes_written)
 }
 
-fn http_get(host: &str, path: &str) -> Result<String, ErrorString> {
+fn http_get(host: &str, path: &str) -> Result<Vec<u8>, ErrorString> {
     let dur = std::time::Duration::from_secs(3);
     let mut resp: Vec<u8> = Vec::new();
     http_request(host, path, "GET", "", dur, 0, |buf| {
 	resp.extend_from_slice(buf);
     })?;
-    Ok(std::str::from_utf8(&resp)?.to_string())
+    Ok(resp)
 }
-fn http_status_code(resp: &str) -> Result<u32, ErrorString> {
-    Ok(resp.split(' ').nth(1).ok_or("no status code")?.parse::<u32>()?)
+fn http_status_code(resp: &[u8]) -> Result<u32, ErrorString> {
+    let codestr = resp.split(|c| *c == b' ').nth(1).ok_or("no status code")?;
+    Ok(std::str::from_utf8(codestr)?.parse::<u32>()?)
 }
-fn http_headers<CB>(resp: &str, mut cb: CB) where
-    CB: FnMut(&str, &str) -> () {
-    for header in resp.lines() {
-	if header.len() == 0 {
+fn http_headers<CB>(resp: &[u8], mut cb: CB) where
+    CB: FnMut(&[u8], &[u8]) -> () {
+    for header in resp.split(|c| *c == b'\n') {
+	if header.len() == 0 || header[header.len() - 1] != b'\r' {
 	    break;
 	}
-	let (hdr_type, hdr_val) = match header.split_once(": ") {
+	let split_at = match memmem(header, b": ") {
 	    Some(x) => x,
 	    None => continue
 	};
-	//	pr!("heade2: '{hdr_type}' '{hdr_val}'");
+	let hdr_type = &header[0..split_at];
+	let hdr_val = &header[split_at + 2..header.len() - 1];
+//	pr!("heade2: '{:?}' '{:?}'", std::str::from_utf8(hdr_type), std::str::from_utf8(hdr_val));
 	cb(hdr_type, hdr_val);
     }
 }
-fn http_body(resp: &str) -> Result<String, ErrorString> {
-    let mut body = &resp[resp.find("\r\n\r\n").ok_or("no body")? + 4..];
+fn http_body(resp: &[u8]) -> Result<Vec<u8>, ErrorString> {
+    let mut body = &resp[memmem(resp, b"\r\n\r\n").ok_or("no body")? + 4..];
     let mut chunked = false;
     http_headers(resp, |hdr_type, hdr_val| {
-	if hdr_type.to_lowercase() == "transfer-encoding" && hdr_val.to_lowercase() == "chunked" {
+	if hdr_type.to_ascii_lowercase() == b"transfer-encoding" && hdr_val.to_ascii_lowercase() == b"chunked" {
 	    chunked = true;
 	}
     });
 //    pr!("chunked: {chunked}");
     if chunked == false {
-	return Ok(String::from(body));
+	return Ok(body.into());
     }
 
-    let mut body_str = String::new();
+    let mut body_str = Vec::<u8>::new();
     loop {
-	let chunk_size_slice: &str = &body[0..body.find(|c| c == ';' || c == '\r').ok_or("bad chunk len")?];
-	let chunk_size = usize::from_str_radix(chunk_size_slice, 16)?;
+	let chunk_size_slice: &[u8] = &body.split(|c| *c == b';' || *c == b'\r').next().ok_or("bad chunk len")?;
+	let chunk_size = usize::from_str_radix(std::str::from_utf8(chunk_size_slice)?, 16)?;
 	if chunk_size == 0 {
 	    break;
 	}
-	body = &body[body.find("\r\n").ok_or("no chunk start")? + 2..];
+	body = &body[memmem(body, b"\r\n").ok_or("no chunk start")? + 2..];
 	if chunk_size + 2 > body.len() {
 	    return Err("chunk size too big".into());
 	}
-	body_str += &body[0..chunk_size];
+	body_str.extend_from_slice(&body[0..chunk_size]);
 	body = &body[chunk_size + 2..];
 	if body.len() == 0 {
 	    break;
@@ -377,7 +385,7 @@ fn url_host_and_path(url: &str) -> (&str, &str) {
     (&url[start_idx..end_idx], &url[end_idx..])
 }
 
-fn http_get_follow_redirects(host: &str, path: &str) -> Result<String, ErrorString> {
+fn http_get_follow_redirects(host: &str, path: &str) -> Result<Vec<u8>, ErrorString> {
     let mut resp;
     let mut h = host.to_string();
     let mut p = path.to_string();
@@ -389,8 +397,11 @@ fn http_get_follow_redirects(host: &str, path: &str) -> Result<String, ErrorStri
 	};
 	let mut loc = false;
 	http_headers(&resp, |hdr_type, hdr_val| {
-	    if hdr_type.to_lowercase() == "location" {
-		let (hh, pp) = url_host_and_path(hdr_val);
+	    if hdr_type.to_ascii_lowercase() != b"location" {
+		return
+	    }
+	    if let Ok(v) = std::str::from_utf8(hdr_val) {
+		let (hh, pp) = url_host_and_path(v);
 		pr!("follow redirect to {hh} {pp}");
 		h = hh.to_string();
 		p = pp.to_string();
@@ -496,7 +507,7 @@ fn speedtest() -> Result<SpeedTestResult, ErrorString> {
 //    pr!("status:{} body:{}", http_status_code(&resp)?, http_body(&resp)?);
     let config_xml = http_body(&resp)?;
 //    pr!("config_xml: {}", config_xml);
-    let config = roxmltree::Document::parse(&config_xml)?;
+    let config = roxmltree::Document::parse(&std::str::from_utf8(&config_xml)?)?;
     pr!("config_xml.len(): {:?}", config_xml.len());
 
     let server_config_node = config.descendants()
@@ -578,7 +589,7 @@ fn speedtest() -> Result<SpeedTestResult, ErrorString> {
 
 
     let servers_xml = http_body(&http_get_follow_redirects("www.speedtest.net", "/speedtest-servers.php")?)?;
-    let servers = roxmltree::Document::parse(&servers_xml)?;
+    let servers = roxmltree::Document::parse(&std::str::from_utf8(&servers_xml)?)?;
     pr!("servers_xml.len(): {:?}", servers_xml.len());
     let mut servers: Vec<_> = servers
         .descendants()
@@ -658,11 +669,56 @@ fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
     }
 }
 
-fn server_connection(_stream: std::net::TcpStream) -> Result<(), ErrorString> {
+fn server_connection(mut stream: std::net::TcpStream) -> Result<(), ErrorString> {
     pr!("new connection");
+    let duration = std::time::Duration::from_secs(10);
+    let now = std::time::Instant::now();
+    let mut buf = [0_u8; 1024 * 8];
+    let mut bytes_read = 0;
+    loop {
+	let timeout = duration.checked_sub(now.elapsed());
+	if timeout.is_none() {
+	    return Err(ErrorString("read timeout".to_string()));
+	}
+	stream.set_read_timeout(timeout)?;
+	match std::io::Read::read(&mut stream, &mut buf[bytes_read..]) {
+	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+	    Err(e) => {
+		pr!("read {e}");
+		break
+	    }
+	    Ok(bytes) => {
+		if bytes == 0 {
+		    return Err(ErrorString("read closed".to_string()));
+		}
+		bytes_read += bytes;
+		if let Some(hdrbuf_off) = memmem(&buf, b"\r\n\r\n") {
+		}
+//		read_cb(&buf[0..bytes_read]);
+//		pr!("read {bytes_read}");
+	    }
+	}
+    }
     Ok(())
 }
+
+
+//use std::os::fd::AsRawFd;
 fn server(listener: std::net::TcpListener) {
+    unsafe {
+	let optval: libc::c_int = 1;
+	let ret = libc::setsockopt(
+//            listener.as_raw_fd(),
+            std::os::fd::AsRawFd::as_raw_fd(&listener),
+            libc::SOL_SOCKET,
+            libc::SO_REUSEPORT,
+            &optval as *const _ as *const libc::c_void,
+            std::mem::size_of_val(&optval) as libc::socklen_t,
+	);
+	if ret != 0 {
+            pr!("setsockopt failed: {}", std::io::Error::last_os_error());
+	}
+    }
     for stream in listener.incoming() {
 	match stream {
 	    Ok(s) => {
@@ -748,7 +804,7 @@ fn main() {
     pr!("store_filename: {store_filename}");
 
     let listener = match std::net::TcpListener::bind((server_address, server_port)) {
-	Err(e) => exit(&format!("could not bind: {}", e), -1),
+	Err(e) => exit(&format!("could not bind {server_address}:{server_port}: {}", e), -1),
 	Ok(l) => l
     };
     let _ = std::thread::Builder::new().name("server".to_string()).spawn(move || {
