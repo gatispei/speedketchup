@@ -139,15 +139,24 @@ mod c {
             tm: *const libc::tm,
         ) -> usize;
 //        pub(crate) fn time(tloc: *const libc::time_t) -> libc::time_t;
+        #[cfg(unix)]
         pub(crate) fn gmtime_r(t: *const libc::time_t, tm: *mut libc::tm);
+        #[cfg(windows)]
+        pub(crate) fn _gmtime64_s(tm: *mut libc::tm, t: *const libc::time_t);
+        #[cfg(unix)]
 	pub(crate) fn timegm(tm: *const libc::tm) -> libc::time_t;
+        #[cfg(windows)]
+	pub(crate) fn _mkgmtime(tm: *const libc::tm) -> libc::time_t;
     }
 }
 //use std::ffi::CString;
 pub fn strftime_gmt(format: &str, epoch: libc::time_t) -> String {
     let now = unsafe {
 	let mut now: libc::tm = std::mem::zeroed();
+        #[cfg(unix)]
         c::gmtime_r(&epoch, &mut now);
+        #[cfg(windows)]
+        c::_gmtime64_s(&mut now, &epoch);
 	now
     };
     let f = std::ffi::CString::new(format).unwrap();
@@ -180,7 +189,11 @@ fn parse_timestr(str: &str) -> Result<u32, ErrorString> {
 	tm.tm_hour = time[0].parse()?;
 	tm.tm_min = time[1].parse()?;
 	tm.tm_sec = time[2].parse()?;
-        c::timegm(&tm) as u32
+        #[cfg(unix)]
+        let t = c::timegm(&tm);
+        #[cfg(windows)]
+        let t = c::_mkgmtime(&tm);
+	t as u32
     };
 
     Ok(x)
