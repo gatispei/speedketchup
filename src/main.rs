@@ -919,7 +919,7 @@ fn server(listener: std::net::TcpListener, store_filename: &str) {
     }
 }
 
-const HELP: &str = "usage: speedtest [options]
+const HELP: &str = "usage: speedketchup [options]
 	-h|--help: print this
 	-v|--version: print version
 	-i|--interval <minutes>: set test interval in minutes, 10 by default
