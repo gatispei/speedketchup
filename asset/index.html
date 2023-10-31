@@ -26,7 +26,7 @@ function initNetwatch() {
 	lock: true,
 	sync: {
 	    key: mooSync.key,
-	    setSeries: true,
+//	    setSeries: true,
 	    match: [matchSyncKeys, matchSyncKeys],
 	},
 	y: false,
@@ -34,7 +34,6 @@ function initNetwatch() {
 
     let axis = [
 	{
-//	    values: _timeAxisStamps,
             grid: {
                 show: true,
                 stroke: "rgba(0,0,0,0.2)",
@@ -51,6 +50,9 @@ function initNetwatch() {
     ];
     let series = {
 	points: {
+	    show: false,
+	    size: 5,
+	    fill: "black",
 	}
     };
 
@@ -59,14 +61,9 @@ function initNetwatch() {
 	title: "Speed (Bandwidth)",
 	...getSize(),
 	cursor: cursorOpts,
-//	tzDate: ts => {
-//	    console.debug(ts);
-//	    return new Date(ts == null ? d[0][d[0].length - 1] : ts);
-//	},
 	drawOrder: ["series", "axes"],
 	series: [
-	    {
-	    },
+	    {},
 	    {
 		label: "Download",
 		value: (u, v) => (v == null ? d[1][d[1].length - 1] : v).toFixed(1) + "Mbps",
