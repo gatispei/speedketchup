@@ -1,6 +1,6 @@
 [package]
 name = "speedketchup"
-version = "1.0.0"
+version = "0.1.0"
 authors = ["Gatis Peisenieks <peisenieks@gmail.com>"]
 license = "MIT"
 edition = "2021"

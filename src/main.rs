@@ -768,7 +768,7 @@ fn server_get_data(store_filename: &str) -> Result<String, ErrorString> {
 	downloads.push(dl);
 	uploads.push(ul);
     }
-    Ok(format!("let netwatchData = [{:?}, {:?}, {:?}, {:?}];", timestamps, latencies, downloads, uploads))
+    Ok(format!("let data = [{:?}, {:?}, {:?}, {:?}];", timestamps, latencies, downloads, uploads))
 }
 fn server_request(url: &[u8], mut stream: &mut std::net::TcpStream, store_filename: &str) -> Result<(), ErrorString> {
     let duration = std::time::Duration::from_secs(10);
@@ -882,6 +882,7 @@ fn server_connection(mut stream: std::net::TcpStream, store_filename: &str) -> R
 
 //use std::os::fd::AsRawFd;
 fn server(listener: std::net::TcpListener, store_filename: &str) {
+    #[cfg(unix)]
     unsafe {
 	let optval: libc::c_int = 1;
 	let ret = libc::setsockopt(

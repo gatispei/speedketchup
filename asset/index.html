@@ -1,6 +1,6 @@
 <html>
   <head>
-    <title>Netwatch</title>
+    <title>SpeedKetchup</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -17,8 +17,8 @@ function getSize() {
 	height: h,
     }
 }
-function initNetwatch() {
-    let d = [netwatchData[0], netwatchData[2], netwatchData[3]];
+function initSpeedKetchup() {
+    let d = [data[0], data[2], data[3]];
     let mooSync = uPlot.sync("moo");
     const matchSyncKeys = (own, ext) => own == ext;
 
@@ -92,7 +92,7 @@ drawOrder: ["series", "axes"],
 	    {},
 	    {
 		label: "Latency",
-		value: (u, v) => (v == null ? netwatchData[1][netwatchData[1].length - 1] : v) + "ms",
+		value: (u, v) => (v == null ? data[1][data[1].length - 1] : v) + "ms",
 		fill: "rgba(50, 150, 50, 1)",
 //		stroke: "purple",
 		...series,
@@ -100,14 +100,14 @@ drawOrder: ["series", "axes"],
 	],
 	axes: axis,
     };
-    let uplot2 = new uPlot(opts2, netwatchData, document.body);
+    let uplot2 = new uPlot(opts2, data, document.body);
 
     window.addEventListener("resize", e => {
 	uplot.setSize(getSize());
 	uplot2.setSize(getSize());
     });
 }
-window.onload = initNetwatch;
+window.onload = initSpeedKetchup;
     </script>
   </body>
 </html>
