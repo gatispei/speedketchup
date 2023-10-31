@@ -8,48 +8,106 @@
     <script type="text/javascript" src="uplot.js"></script>
     <script type="text/javascript" src="data.js"></script>
   </head>
-  <body>
+  <body style="margin: 0;">
     <script type="text/javascript">
 function getSize() {
+    let h = Math.max(window.innerHeight / 2 - 100, 200);
     return {
 	width: window.innerWidth,
-	height: window.innerHeight,
+	height: h,
     }
 }
 function initNetwatch() {
+    let d = [netwatchData[0], netwatchData[2], netwatchData[3]];
+    let mooSync = uPlot.sync("moo");
+    const matchSyncKeys = (own, ext) => own == ext;
+
+    const cursorOpts = {
+	lock: true,
+	sync: {
+	    key: mooSync.key,
+	    setSeries: true,
+	    match: [matchSyncKeys, matchSyncKeys],
+	},
+	y: false,
+    };
+
+    let axis = [
+	{
+//	    values: _timeAxisStamps,
+            grid: {
+                show: true,
+                stroke: "rgba(0,0,0,0.2)",
+                width: 1,
+            },
+	},
+	{
+            grid: {
+                show: true,
+                stroke: "rgba(0,0,0,0.2)",
+                width: 1,
+            },
+	},
+    ];
+    let series = {
+	points: {
+	}
+    };
+
+    const _timeSeriesStamp = "{YYYY}-{MMM}-{D} {H}:{mm}:{ss}";
     let opts = {
+	title: "Speed (Bandwidth)",
 	...getSize(),
+	cursor: cursorOpts,
+//	tzDate: ts => {
+//	    console.debug(ts);
+//	    return new Date(ts == null ? d[0][d[0].length - 1] : ts);
+//	},
+	drawOrder: ["series", "axes"],
+	series: [
+	    {
+	    },
+	    {
+		label: "Download",
+		value: (u, v) => (v == null ? d[1][d[1].length - 1] : v).toFixed(1) + "Mbps",
+		fill: "rgba(255, 0, 0, 0.7)",
+//		stroke: "red",
+		...series,
+	    },
+	    {
+		label: "Upload",
+		value: (u, v) => (v == null ? d[2][d[2].length - 1] : v).toFixed(1) + "Mbps",
+		fill: "rgba(0, 0, 255, 0.7)",
+//		stroke: "blue",
+		...series,
+	    }
+	],
+	axes: axis,
+    };
+    let uplot = new uPlot(opts, d, document.body);
+
+    let opts2 = {
+	title: "Ping (Latency)",
+	...getSize(),
+	cursor: cursorOpts,
+drawOrder: ["series", "axes"],
 	series: [
 	    {},
 	    {
-		spanGaps: false,
-		label: "Latency (ms)",
-		//	    value: (self, rawValue) => "$" + rawValue.toFixed(2),
-		stroke: "green",
-		width: 1,
-		fill: "rgba(0, 255, 0, 0.1)",
+		label: "Latency",
+		value: (u, v) => (v == null ? netwatchData[1][netwatchData[1].length - 1] : v) + "ms",
+		fill: "rgba(50, 150, 50, 1)",
+//		stroke: "purple",
+		...series,
 	    },
-	    {
-		spanGaps: false,
-		label: "Download (Mbps)",
-		//	    value: (self, rawValue) => "$" + rawValue.toFixed(2),
-		stroke: "red",
-		width: 1,
-		fill: "rgba(255, 0, 0, 0.1)",
-	    },
-	    {
-		spanGaps: false,
-		label: "Upload (Mbps)",
-		//	    value: (self, rawValue) => "$" + rawValue.toFixed(2),
-		stroke: "blue",
-		width: 1,
-		fill: "rgba(0, 0, 255, 0.1)",
-	    }
 	],
+	axes: axis,
     };
-    let uplot = new uPlot(opts, netwatchData, document.body);
+    let uplot2 = new uPlot(opts2, netwatchData, document.body);
+
     window.addEventListener("resize", e => {
 	uplot.setSize(getSize());
+	uplot2.setSize(getSize());
     });
 }
 window.onload = initNetwatch;

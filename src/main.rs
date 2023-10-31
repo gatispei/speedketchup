@@ -185,6 +185,7 @@ fn parse_timestr(str: &str) -> Result<u32, ErrorString> {
 	tm.tm_year = date[0].parse()?;
 	tm.tm_year -= 1900;
 	tm.tm_mon = date[1].parse()?;
+	tm.tm_mon -= 1;
 	tm.tm_mday = date[2].parse()?;
 	tm.tm_hour = time[0].parse()?;
 	tm.tm_min = time[1].parse()?;

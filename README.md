@@ -1,12 +1,12 @@
 **SpeedKetchup**
 ------------------------------
 
-Automatically run periodic internet [speed test](speedtest.net), store, display results with builtin web server.
+Automatically run periodic internet [speed test](https://speedtest.net), store, display results with builtin web server.
 
 ---
 ### Introduction
 
-This strives to be small, efficient all-in-one program (~750 kB statically linked binary including assets) written in pure [rust](https://rust-lang.org).
+This aims to be small, efficient all-in-one program (~750 kB statically linked binary including assets) written in [rust](https://rust-lang.org).
 
 ---
 ### Features
@@ -16,3 +16,8 @@ This strives to be small, efficient all-in-one program (~750 kB statically linke
 - builtin web-server to display results in nice [uPlot](https://github.com/leeoniya/uPlot) graphs
 - all web assets are included in the program binary
 - statically linked with musl - not dependent on system libc, essentially a single binary container
+
+---
+### Alternatives
+
+- https://github.com/barrycarey/Speedmon - a python implementation
