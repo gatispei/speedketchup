@@ -756,10 +756,11 @@ fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
     }
 }
 
-const ASSET_INDEX_HTML: &str = include_str!("../asset/index.html");
-const ASSET_FAVICON_SVG: &str = include_str!("../asset/favicon.svg");
-const ASSET_UPLOT_JS: &str = include_str!("../asset/uplot.js");
-const ASSET_UPLOT_CSS: &str = include_str!("../asset/uplot.css");
+const ASSET_INDEX_HTML: &[u8] = include_bytes!("../asset/index.html");
+const ASSET_FAVICON_SVG: &[u8] = include_bytes!("../asset/favicon.svg");
+const ASSET_UPLOT_JS: &[u8] = include_bytes!("../asset/uplot.js");
+const ASSET_UPLOT_CSS: &[u8] = include_bytes!("../asset/uplot.css");
+const ASSET_STAIN_JPG: &[u8] = include_bytes!("../asset/stain.jpg");
 
 fn server_get_data(store_filename: &str) -> Result<String, ErrorString> {
     let data = &std::fs::read(store_filename)?;
@@ -790,6 +791,12 @@ fn server_get_data(store_filename: &str) -> Result<String, ErrorString> {
 	    Err(_) => continue,
 	    Ok(t) => t,
 	};
+	if timestamps.len() == 0 {
+	    timestamps.push(time - 10);
+	    latencies.push(latency);
+	    downloads.push(dl);
+	    uploads.push(ul);
+	}
 	timestamps.push(time);
 	latencies.push(latency);
 	downloads.push(dl);
@@ -809,20 +816,20 @@ fn server_request(url: &[u8], mut stream: &mut std::net::TcpStream, store_filena
 	"/favicon.svg" => (ASSET_FAVICON_SVG, "image/svg+xml"),
 	"/uplot.js" => (ASSET_UPLOT_JS, "text/javascript"),
 	"/uplot.css" => (ASSET_UPLOT_CSS, "text/css"),
+	"/stain.jpg" => (ASSET_STAIN_JPG, "image/jpg"),
 	"/data.js" => {
 	    _chart_data = server_get_data(store_filename)?;
-	    (_chart_data.as_str(), "text/javascript")
+	    (_chart_data.as_bytes(), "text/javascript")
 	}
-	_ => ("404", "text/html"),
+	_ => ("404".as_bytes(), "text/html"),
     };
 
-//    let data = "Hello world!";
-    let resp_str = format!("HTTP/1.1 200 OK\r
+    let mut resp = format!("HTTP/1.1 200 OK\r
 Content-Type: {content_type}\r
 Content-Length: {}\r
 \r
-{}", data.len(), data);
-    let resp = resp_str.as_bytes();
+", data.len()).as_bytes().to_vec();
+    resp.extend_from_slice(data);
     let mut bytes_written = 0;
 
     // send post data
