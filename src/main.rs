@@ -138,23 +138,22 @@ mod c {
             format: *const libc::c_char,
             tm: *const libc::tm,
         ) -> usize;
-//        pub(crate) fn time(tloc: *const libc::time_t) -> libc::time_t;
         #[cfg(unix)]
-        pub(crate) fn gmtime_r(t: *const libc::time_t, tm: *mut libc::tm);
+        pub(crate) fn gmtime_r(t: *const libc::c_long, tm: *mut libc::tm);
         #[cfg(windows)]
         pub(crate) fn _gmtime64_s(tm: *mut libc::tm, t: *const libc::time_t);
         #[cfg(unix)]
-	pub(crate) fn timegm(tm: *const libc::tm) -> libc::time_t;
+	pub(crate) fn timegm(tm: *const libc::tm) -> libc::c_long;
         #[cfg(windows)]
 	pub(crate) fn _mkgmtime(tm: *const libc::tm) -> libc::time_t;
     }
 }
 //use std::ffi::CString;
-pub fn strftime_gmt(format: &str, epoch: libc::time_t) -> String {
+pub fn strftime_gmt(format: &str, epoch: i64) -> String {
     let now = unsafe {
 	let mut now: libc::tm = std::mem::zeroed();
         #[cfg(unix)]
-        c::gmtime_r(&epoch, &mut now);
+        c::gmtime_r(&(epoch as libc::c_long), &mut now);
         #[cfg(windows)]
         c::_gmtime64_s(&mut now, &epoch);
 	now
@@ -212,6 +211,13 @@ macro_rules! pr {
     }};
 }
 
+
+const ATTR_BOLD: &str = "\x1b[1m";
+const ATTR_RED: &str = "\x1b[31m";
+const ATTR_GREEN: &str = "\x1b[32m";
+//const ATTR_BLUE: &str = "\x1b[34m";
+const ATTR_RESET: &str = "\x1b[m";
+
 fn memmem<T>(haystack: &[T], needle: &[T]) -> Option<usize>
 where for<'a> &'a [T]: PartialEq {
     haystack.windows(needle.len()).position(|window| window == needle)
@@ -227,10 +233,16 @@ fn duration<F, T>(work: F) -> Result<u32, ErrorString> where
 fn url_get_latency(host: &str, path: &str) -> Result<u32, ErrorString> {
     let latencies: Vec<_> = (0..3).filter_map(
 	|_i|
-	duration(|| {
+	match duration(|| {
 	    let dur = std::time::Duration::from_secs(1);
-	    Ok(http_request(host, path, "GET", "", dur, 0, dummy_cb)?)
-	}).ok()
+	    http_request(host, path, "GET", "", dur, 0, dummy_cb)
+	}) {
+	    Err(e) => {
+		pr!("error: {}", e);
+		None
+	    },
+	    Ok(r) => Some(r)
+	}
     )
 	.collect();
     let mut lat = u32::MAX;
@@ -238,14 +250,14 @@ fn url_get_latency(host: &str, path: &str) -> Result<u32, ErrorString> {
 	// assume 2 roundtrips per http request
 	lat = latencies.iter().sum::<u32>() / 2 / latencies.len() as u32;
     }
-    pr!("result {}: {:?} / {}", path, lat, latencies.len());
+    pr!("result: {:?} => {:?}ms", latencies, lat);
     Ok(lat)
 }
 
 fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>) -> Result<(), ErrorString> {
     let threads: Vec<_> = servers.iter().filter_map(|server| {
 	let host = server.host.clone();
-	Some(std::thread::Builder::new().name(format!("test {} latency", server.host)).spawn(move || -> Result<u32, ErrorString> {
+	Some(std::thread::Builder::new().name(format!("test latency {}", server.host)).spawn(move || -> Result<u32, ErrorString> {
 	    url_get_latency(&host, "speedtest/latency.txt")
 	}).ok()?)
     }).collect();
@@ -561,7 +573,7 @@ fn test_multithread(
     Ok(bytes)
 }
 
-fn speedtest() -> Result<SpeedTestResult, ErrorString> {
+fn speedtest(server: &Option<String>) -> Result<SpeedTestResult, ErrorString> {
     pr!("speedtest");
     let resp = http_get_follow_redirects("www.speedtest.net", "/speedtest-config.php")?;
 //    pr!("status:{} body:{}", http_status_code(&resp)?, http_body(&resp)?);
@@ -648,39 +660,54 @@ fn speedtest() -> Result<SpeedTestResult, ErrorString> {
         .to_string();
 
 
-    let servers_xml = http_body(&http_get_follow_redirects("www.speedtest.net", "/speedtest-servers.php")?)?;
-    let servers = roxmltree::Document::parse(&std::str::from_utf8(&servers_xml)?)?;
-    pr!("servers_xml.len(): {:?}", servers_xml.len());
-    let mut servers: Vec<_> = servers
-        .descendants()
-        .filter(|node| node.tag_name().name() == "server")
-        .filter_map(|n| {
-            let lll: Point = Point {
-                x: n.attribute("lat")?.parse().ok()?,
-                y: n.attribute("lon")?.parse().ok()?,
-            };
-            let country = n.attribute("country")?;
-            let name = n.attribute("name")?;
-	    let sponsor = n.attribute("sponsor")?;
-            Some(SpeedTestServer {
-		descr: format!("{}/{}/{}", sponsor, name, country),
-                host: n.attribute("host")?.to_string(),
-//                url: n.attribute("url")?.to_string(),
-                id: n.attribute("id")?.parse().ok()?,
-                distance: client_location.distance(&lll) * DEGREES_TO_KM,
+    let mut servers: Vec<_>;
+    match server {
+	None => {
+	    let servers_xml = http_body(&http_get_follow_redirects("www.speedtest.net", "/speedtest-servers.php")?)?;
+	    pr!("servers_xml.len(): {:?}", servers_xml.len());
+	    let servers_xml = roxmltree::Document::parse(&std::str::from_utf8(&servers_xml)?)?;
+	    servers = servers_xml
+		.descendants()
+		.filter(|node| node.tag_name().name() == "server")
+		.filter_map(|n| {
+		    let lll: Point = Point {
+			x: n.attribute("lat")?.parse().ok()?,
+			y: n.attribute("lon")?.parse().ok()?,
+		    };
+		    let country = n.attribute("country")?;
+		    let name = n.attribute("name")?;
+		    let sponsor = n.attribute("sponsor")?;
+		    Some(SpeedTestServer {
+			descr: format!("{}/{}/{}", sponsor, name, country),
+			host: n.attribute("host")?.to_string(),
+			//                url: n.attribute("url")?.to_string(),
+			id: n.attribute("id")?.parse().ok()?,
+			distance: client_location.distance(&lll) * DEGREES_TO_KM,
+			latency: u32::MAX,
+		    })
+		})
+		.filter(|server| !ignore_servers.contains(&server.id))
+		.collect();
+	    servers.sort_by(|a, b| {
+		a.distance.partial_cmp(&b.distance).unwrap()
+	    });
+	},
+	Some(x) => {
+	    servers = vec!(SpeedTestServer {
+		descr: "".into(),
+		host: x.to_string(),
+		id: 0,
+		distance: 0.0,
 		latency: u32::MAX,
-            })
-        })
-        .filter(|server| !ignore_servers.contains(&server.id))
-        .collect();
-    servers.sort_by(|a, b| {
-        a.distance.partial_cmp(&b.distance).unwrap()
-    });
+	    });
+	}
+    };
     servers.truncate(10);
     servers_sort_by_latency(&mut servers)?;
 //    pr!("servers {:#?}", servers);
 
-    let server = servers.iter().next().ok_or("no server")?;
+    let server = servers.iter().filter(|s| s.latency != u32::MAX)
+	.next().ok_or("no good server")?;
     pr!("test server {:?}", server);
     let bytes = test_multithread(&server.host, download_duration, &download_sizes, download_threads, test_download)?;
     let download_mbps = (bytes.iter().sum::<usize>() as u64 * 8 / download_duration.as_millis() as u64) as f32 / 1000.0;
@@ -715,7 +742,7 @@ fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
     let path = std::path::Path::new(file);
     if path.exists() == false {
 	if std::fs::write(file, CSV_COLS).is_err() {
-	    exit(&format!("cannot write to {}", file), -1);
+	    exit(&format!("cannot write to {file}"), -1);
 	}
     }
 
@@ -924,19 +951,27 @@ fn server(listener: std::net::TcpListener, store_filename: &str) {
 const HELP: &str = "usage: speedketchup [options]
 	-h|--help: print this
 	-v|--version: print version
-	-i|--interval <minutes>: set test interval in minutes, 10 by default
-	-s|--store <filename>: file to store test results in, results.csv by default
-	-a|--address <ip>: address to listen on for incoming connections, 127.0.0.1 by default
-	-p|--port <port>: port to listen on for incoming connections, 8080 by default";
+	-i|--interval <minutes>: test interval in minutes, 10 by default
+	-f|--file <filename>: file to store test results in, speedketchup-results.csv by default
+	-a|--address <local_addr>: address to listen on for incoming connections, 127.0.0.1 by default
+		local_addr: use 0.0.0.0 to accept connections on all addresses
+	-p|--port <port>: port to listen on for incoming connections, 8080 by default
+	-s|--server <server_host[:server_port]>: speedtest server to use, avoids automatic server selection if specified
+		server_host: domain_name|ipv4_addr|ipv6_addr
+		server_port: port number, 8080 by default";
 fn exit(str: &str, code: i32) -> ! {
-    eprintln!("{}", str);
+    match code {
+	0 => eprintln!("{str}"),
+	_ => eprintln!("{ATTR_RED}{ATTR_BOLD}{str}{ATTR_RESET}"),
+    };
     std::process::exit(code);
 }
 fn main() {
     let mut test_interval: u64 = 10;
-    let mut store_filename = "results.csv";
-    let mut server_port: u16 = 8080;
-    let mut server_address = "127.0.0.1";
+    let mut filename = "speedketchup-results.csv";
+    let mut listen_port: u16 = 8080;
+    let mut listen_address = "127.0.0.1";
+    let mut server_host: Option<String> = None;
     let args = std::env::args().collect::<Vec<_>>();
     let mut it = args.iter();
     it.next();
@@ -953,20 +988,20 @@ fn main() {
 		    None => exit("no interval given", -1),
 		}
 	    },
-	    "-s" | "--store" => {
-		store_filename = match it.next() {
+	    "-f" | "--file" => {
+		filename = match it.next() {
 		    Some(x) => x,
 		    None => exit("no filename given", -1),
 		}
 	    },
 	    "-a" | "--address" => {
-		server_address = match it.next() {
+		listen_address = match it.next() {
 		    Some(x) => x,
 		    None => exit("no address given", -1),
 		}
 	    },
 	    "-p" | "--port" => {
-		server_port = match it.next() {
+		listen_port = match it.next() {
 		    Some(x) => match x.parse() {
 			Ok(i) => i,
 			Err(_) => exit("bad port", -1),
@@ -974,19 +1009,45 @@ fn main() {
 		    None => exit("no port given", -1),
 		}
 	    },
+	    "-s" | "--server" => {
+		server_host = match it.next() {
+		    Some(x) => {
+			match x.find(":") {
+			    Some(_off) => Some(x.to_string()),
+			    None => Some(format!("{x}:8080"))
+			}
+		    }
+		    None => exit("no server given", -1),
+		}
+	    },
 	    _ => exit(&format!("unknown arg '{}'", arg), -1),
 	}
     }
 
     std::env::set_var("RUST_BACKTRACE", "1");
-    pr!("interval: {test_interval}m");
-    pr!("store_filename: {store_filename}");
+    println!("speedketchup parameters (run with '-h' to see options):");
+    println!("{ATTR_GREEN}test interval: {ATTR_BOLD}{test_interval}m{ATTR_RESET}");
+    println!("{ATTR_GREEN}results file: {ATTR_BOLD}{filename}{ATTR_RESET}");
+    println!("{ATTR_GREEN}listen address: {ATTR_BOLD}{listen_address}:{listen_port}{ATTR_RESET}");
+    println!("{ATTR_GREEN}server: {ATTR_BOLD}{}{ATTR_RESET}",
+	     match &server_host { None => "<automatic>", Some(x) => &x });
+    let sk_url = &format!("http://127.0.0.1:{listen_port}");
+    println!("speedketchup is at {ATTR_BOLD}{sk_url}{ATTR_RESET}");
 
-    let listener = match std::net::TcpListener::bind((server_address, server_port)) {
-	Err(e) => exit(&format!("could not bind {server_address}:{server_port}: {}", e), -1),
+    let listener = match std::net::TcpListener::bind((listen_address, listen_port)) {
+	Err(e) => exit(&format!("could not bind {listen_address}:{listen_port}: {}", e), -1),
 	Ok(l) => l
     };
-    let sf = store_filename.to_string().clone();
+#[cfg(unix)]
+    let xxx = std::process::Command::new("open").args([sk_url]).output();
+#[cfg(windows)]
+    let xxx = std::process::Command::new("cmd.exe").args(["/C", "start", "", sk_url]).output();
+    match xxx {
+	Err(e) => pr!("could not open {sk_url}: {e}"),
+	Ok(_) => ()
+    };
+
+    let sf = filename.to_string().clone();
     let _ = std::thread::Builder::new().name("server".to_string()).spawn(move || {
 	server(listener, &sf);
     });
@@ -994,7 +1055,7 @@ fn main() {
     let test_interval = std::time::Duration::from_secs(test_interval * 60);
     loop {
 	let now = std::time::Instant::now();
-	let result = speedtest();
+	let result = speedtest(&server_host);
 	match &result {
 	    Err(err) => {
 		pr!("speedtest error:{}", err);
@@ -1005,7 +1066,7 @@ fn main() {
 		    r.latency, r.download, r.upload, r.client_public_ip, r.client_isp, r.server.descr, r.server.host);
 	    }
 	};
-	save_result(&store_filename, &result);
+	save_result(&filename, &result);
 	match test_interval.checked_sub(now.elapsed()) {
 	    Some(dur) => {
 		pr!("sleep for {:?}", dur);

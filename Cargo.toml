@@ -20,5 +20,7 @@ roxmltree = "0.18.1"
 opt-level = "z"
 lto = true
 codegen-units = 1
-#panic = "abort"
+panic = "abort"
 strip = true
+
+#lipo -create -output universal_app x86_app arm_app
