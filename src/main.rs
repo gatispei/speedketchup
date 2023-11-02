@@ -114,7 +114,9 @@ struct SpeedTestServer {
 #[derive(Debug)]
 struct SpeedTestResult {
 //    timestamp: u32,
-    latency: u32,
+    latency_idle: u32,
+    latency_download: u32,
+    latency_upload: u32,
     download: f32,
     upload: f32,
     client_public_ip: Ipv6Addr,
@@ -230,21 +232,35 @@ fn duration<F, T>(work: F) -> Result<u32, ErrorString> where
     Ok(now.elapsed().as_millis() as u32)
 }
 
-fn url_get_latency(host: &str, path: &str) -> Result<u32, ErrorString> {
-    let latencies: Vec<_> = (0..3).filter_map(
-	|_i|
-	match duration(|| {
-	    let dur = std::time::Duration::from_secs(1);
-	    http_request(host, path, "GET", "", dur, 0, dummy_cb)
+fn url_get_latency(
+    host: &str,
+    path: &str,
+    max_iters: u32,
+    total_dur: std::time::Duration,
+    intertest_dur: std::time::Duration)
+    -> Result<u32, ErrorString> {
+    let now = std::time::Instant::now();
+    let latencies: Vec<_> = (0..max_iters).filter_map(|_i| {
+	let mut timeout = total_dur.checked_sub(now.elapsed())?;
+	let ret = match duration(|| {
+	    http_request(host, path, "GET", "", timeout, 0, dummy_cb)
 	}) {
 	    Err(e) => {
 		pr!("error: {}", e);
 		None
 	    },
 	    Ok(r) => Some(r)
+	};
+	timeout = total_dur.checked_sub(now.elapsed())?;
+	if timeout >= intertest_dur {
+	    std::thread::sleep(intertest_dur);
 	}
-    )
-	.collect();
+	else {
+	    std::thread::sleep(timeout);
+	}
+	ret
+    }).collect();
+
     let mut lat = u32::MAX;
     if latencies.len() > 0 {
 	// assume 2 roundtrips per http request
@@ -258,7 +274,9 @@ fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>) -> Result<(), Err
     let threads: Vec<_> = servers.iter().filter_map(|server| {
 	let host = server.host.clone();
 	Some(std::thread::Builder::new().name(format!("test latency {}", server.host)).spawn(move || -> Result<u32, ErrorString> {
-	    url_get_latency(&host, "speedtest/latency.txt")
+	    url_get_latency(&host, "speedtest/latency.txt", 3,
+			    std::time::Duration::from_secs(3),
+			    std::time::Duration::from_millis(50))
 	}).ok()?)
     }).collect();
     let mut latencies = vec![];
@@ -573,6 +591,21 @@ fn test_multithread(
     Ok(bytes)
 }
 
+fn test_latency(
+    host: &str,
+    duration: std::time::Duration)
+    -> Result<std::thread::JoinHandle<Result<u32, ErrorString>>, std::io::Error> {
+
+    let h: String = host.to_string();
+    std::thread::Builder::new().name(format!("test latency {}", h)).spawn(move || -> Result<u32, ErrorString> {
+	let start_delay = std::time::Duration::from_millis(500);
+	std::thread::sleep(start_delay);
+	url_get_latency(&h, "speedtest/latency.txt", 10,
+			duration.checked_sub(start_delay).ok_or("test duration too short for latency test")?,
+			std::time::Duration::from_secs(1))
+    })
+}
+
 fn speedtest(server: &Option<String>) -> Result<SpeedTestResult, ErrorString> {
     pr!("speedtest");
     let resp = http_get_follow_redirects("www.speedtest.net", "/speedtest-config.php")?;
@@ -709,14 +742,31 @@ fn speedtest(server: &Option<String>) -> Result<SpeedTestResult, ErrorString> {
     let server = servers.iter().filter(|s| s.latency != u32::MAX)
 	.next().ok_or("no good server")?;
     pr!("test server {:?}", server);
+
+    let download_latency_thread = test_latency(&server.host, download_duration)?;
     let bytes = test_multithread(&server.host, download_duration, &download_sizes, download_threads, test_download)?;
+    let download_latency = match download_latency_thread.join()? {
+	Ok(l) => l,
+	Err(e) => {
+	    pr!("download latency error:{}", e);
+	    u32::MAX
+	},
+    };
     let download_mbps = (bytes.iter().sum::<usize>() as u64 * 8 / download_duration.as_millis() as u64) as f32 / 1000.0;
     pr!("download mbps:{download_mbps} bytes:{:?}", bytes);
 
     // allow some time for downloads to stop
     std::thread::sleep(std::time::Duration::from_secs(1));
 
+    let upload_latency_thread = test_latency(&server.host, upload_duration)?;
     let bytes = test_multithread(&server.host, upload_duration, &upload_sizes, upload_threads, test_upload)?;
+    let upload_latency = match upload_latency_thread.join()? {
+	Ok(l) => l,
+	Err(e) => {
+	    pr!("upload latency error:{}", e);
+	    u32::MAX
+	},
+    };
     let upload_mbps = (bytes.iter().sum::<usize>() as u64 * 8 / upload_duration.as_millis() as u64) as f32 / 1000.0;
     pr!("upload mbps:{upload_mbps} bytes:{:?}", bytes);
 //    url_upload(&server.host, "speedtest/upload.php", upload_duration, 1000)?;
@@ -724,7 +774,9 @@ fn speedtest(server: &Option<String>) -> Result<SpeedTestResult, ErrorString> {
 //    let timestamp = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() as u32;
     Ok(SpeedTestResult {
 //	timestamp: timestamp,
-	latency: server.latency,
+	latency_idle: server.latency,
+	latency_download: download_latency,
+	latency_upload: upload_latency,
 	download: download_mbps,
 	upload: upload_mbps,
 	client_public_ip: client_ip,
@@ -733,11 +785,25 @@ fn speedtest(server: &Option<String>) -> Result<SpeedTestResult, ErrorString> {
     })
 }
 
-const CSV_COLS: &str = "Timestamp,Latency(ms),Download(Mbps),Upload(Mbps),ClientPublicIP,ClientISP,ServerDescr,ServerHost,Error\n";
+fn u32_to_csv(n: u32) -> String {
+    if n == u32::MAX {
+	return String::new();
+    }
+    return format!("{n}")
+}
+
+const CSV_COLS: &str = "Timestamp,LatencyIdle(ms),LatencyDownload(ms),LatencyUpload(ms),Download(Mbps),Upload(Mbps),ClientPublicIP,ClientISP,ServerDescr,ServerHost,Error\n";
 fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
     let str = match result {
-	Ok(r) => format!("{},{},{},{},{},\"{}\",\"{}\",{},\n", timestr(), r.latency, r.download, r.upload, r.client_public_ip, r.client_isp, r.server.descr, r.server.host),
-	Err(e) => format!("{},,,,,,,,{e}\n", timestr()),
+	Ok(r) => format!("{},{},{},{},{},{},{},\"{}\",\"{}\",{},\n",
+			 timestr(),
+			 u32_to_csv(r.latency_idle),
+			 u32_to_csv(r.latency_download),
+			 u32_to_csv(r.latency_upload),
+			 r.download, r.upload,
+			 r.client_public_ip, r.client_isp,
+			 r.server.descr, r.server.host),
+	Err(e) => format!("{},,,,,,,,,,{e}\n", timestr()),
     };
     let path = std::path::Path::new(file);
     if path.exists() == false {
@@ -762,16 +828,36 @@ const ASSET_UPLOT_JS: &[u8] = include_bytes!("../asset/uplot.js");
 const ASSET_UPLOT_CSS: &[u8] = include_bytes!("../asset/uplot.css");
 const ASSET_STAIN_JPG: &[u8] = include_bytes!("../asset/stain.jpg");
 
+struct JSu32(u32);
+impl std::fmt::Debug for JSu32 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+	if self.0 == u32::MAX {
+	    return write!(f, "null")
+	}
+	write!(f, "{}", self.0)
+    }
+}
+struct JSf32(f32);
+impl std::fmt::Debug for JSf32 {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+	if self.0.is_nan() {
+	    return write!(f, "null")
+	}
+	write!(f, "{}", self.0)
+    }
+}
 fn server_get_data(store_filename: &str) -> Result<String, ErrorString> {
     let data = &std::fs::read(store_filename)?;
     let mut it = std::str::from_utf8(data)?.lines();
     it.next();
     let mut timestamps: Vec<u32> = vec!();
-    let mut latencies: Vec<u32> = vec!();
-    let mut downloads: Vec<f32> = vec!();
-    let mut uploads: Vec<f32> = vec!();
+    let mut lat_idles: Vec<JSu32> = vec!();
+    let mut lat_dls: Vec<JSu32> = vec!();
+    let mut lat_uls: Vec<JSu32> = vec!();
+    let mut downloads: Vec<JSf32> = vec!();
+    let mut uploads: Vec<JSf32> = vec!();
     while let Some(line) = it.next() {
-	let x: Vec<_> = line.split(",").take(4).collect();
+	let x: Vec<_> = line.split(",").take(6).collect();
 	if x.len() < 4 {
 	    continue;
 	}
@@ -779,30 +865,42 @@ fn server_get_data(store_filename: &str) -> Result<String, ErrorString> {
 	    Err(_) => continue,
 	    Ok(t) => t,
 	};
-	let latency = match x[1].parse::<u32>() {
-	    Err(_) => continue,
+	let lat_idle = match x[1].parse::<u32>() {
+	    Err(_) => u32::MAX,
 	    Ok(t) => t,
 	};
-	let dl = match x[2].parse::<f32>() {
-	    Err(_) => continue,
+	let lat_dl = match x[2].parse::<u32>() {
+	    Err(_) => u32::MAX,
 	    Ok(t) => t,
 	};
-	let ul = match x[3].parse::<f32>() {
-	    Err(_) => continue,
+	let lat_ul = match x[3].parse::<u32>() {
+	    Err(_) => u32::MAX,
+	    Ok(t) => t,
+	};
+	let dl = match x[4].parse::<f32>() {
+	    Err(_) => f32::NAN,
+	    Ok(t) => t,
+	};
+	let ul = match x[5].parse::<f32>() {
+	    Err(_) => f32::NAN,
 	    Ok(t) => t,
 	};
 	if timestamps.len() == 0 {
 	    timestamps.push(time - 10);
-	    latencies.push(latency);
-	    downloads.push(dl);
-	    uploads.push(ul);
+	    lat_idles.push(JSu32(lat_idle));
+	    lat_dls.push(JSu32(lat_dl));
+	    lat_uls.push(JSu32(lat_ul));
+	    downloads.push(JSf32(dl));
+	    uploads.push(JSf32(ul));
 	}
 	timestamps.push(time);
-	latencies.push(latency);
-	downloads.push(dl);
-	uploads.push(ul);
+	lat_idles.push(JSu32(lat_idle));
+	lat_dls.push(JSu32(lat_dl));
+	lat_uls.push(JSu32(lat_ul));
+	downloads.push(JSf32(dl));
+	uploads.push(JSf32(ul));
     }
-    Ok(format!("let data = [{:?}, {:?}, {:?}, {:?}];", timestamps, latencies, downloads, uploads))
+    Ok(format!("let data = [{:?}, {:?}, {:?}, {:?}, {:?}, {:?}];", timestamps, lat_idles, lat_dls, lat_uls, downloads, uploads))
 }
 fn server_request(url: &[u8], mut stream: &mut std::net::TcpStream, store_filename: &str) -> Result<(), ErrorString> {
     let duration = std::time::Duration::from_secs(10);
@@ -1069,8 +1167,8 @@ fn main() {
 	    }
 	    Ok(r) => {
 //		pr!("result: {:#?}", r);
-		pr!("speedtest latency:{}ms download:{}Mbps upload:{}Mbps client_public_ip:{} client_isp:{} server_descr:{} server_host:{}",
-		    r.latency, r.download, r.upload, r.client_public_ip, r.client_isp, r.server.descr, r.server.host);
+		pr!("speedtest latency:idle-{}ms/dl-{}ms/ul-{}ms download:{}Mbps upload:{}Mbps client_ip:{} isp:{} server:{}",
+		    r.latency_idle, r.latency_download, r.latency_upload, r.download, r.upload, r.client_public_ip, r.client_isp, r.server.host);
 	    }
 	};
 	save_result(&filename, &result);

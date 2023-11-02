@@ -19,7 +19,6 @@ function getSize() {
     }
 }
 function initSpeedKetchup() {
-    let d = [data[0], data[2], data[3]];
     let mooSync = uPlot.sync("moo");
     const matchSyncKeys = (own, ext) => own == ext;
 
@@ -57,7 +56,7 @@ function initSpeedKetchup() {
 	}
     };
 
-    const _timeSeriesStamp = "{YYYY}-{MMM}-{D} {H}:{mm}:{ss}";
+    let d = [data[0], data[4], data[5]];
     let opts = {
 	title: "Speed (Bandwidth)",
 	...getSize(),
@@ -84,24 +83,36 @@ function initSpeedKetchup() {
     };
     let uplot = new uPlot(opts, d, document.body);
 
+    let d2 = [data[0], data[2], data[3], data[1]];
     let opts2 = {
 	title: "Ping (Latency)",
 	...getSize(),
 	cursor: cursorOpts,
-drawOrder: ["series", "axes"],
+	drawOrder: ["series", "axes"],
 	series: [
 	    {},
 	    {
-		label: "Latency",
-		value: (u, v) => (v == null ? data[1][data[1].length - 1] : v) + "ms",
+		label: "Latency While Downloading",
+		value: (u, v) => (v == null ? d2[1][d2[1].length - 1] : v) + "ms",
+		fill: "rgba(255, 0, 0, 0.1)",
+		...series,
+	    },
+	    {
+		label: "Latency While Uploading",
+		value: (u, v) => (v == null ? d2[2][d2[2].length - 1] : v) + "ms",
+		fill: "rgba(0, 0, 255, 0.1)",
+		...series,
+	    },
+	    {
+		label: "Latency When Idle",
+		value: (u, v) => (v == null ? d2[3][d2[3].length - 1] : v) + "ms",
 		fill: "rgba(50, 150, 50, 1)",
-//		stroke: "purple",
 		...series,
 	    },
 	],
 	axes: axis,
     };
-    let uplot2 = new uPlot(opts2, data, document.body);
+    let uplot2 = new uPlot(opts2, d2, document.body);
 
     window.addEventListener("resize", e => {
 	uplot.setSize(getSize());
