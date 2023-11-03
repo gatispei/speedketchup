@@ -8,8 +8,9 @@
     <script type="text/javascript" src="uplot.js"></script>
     <script type="text/javascript" src="data.js"></script>
   </head>
-  <body style="margin: 0;">
+  <body style="margin: 0; padding: 0; font-family: verdana; font-size: 11px;">
     <img src="stain.jpg" style="position: absolute; left: 0px; top: 0px; z-index: -1;">
+    <pre id="status"></pre>
     <script type="text/javascript">
 function getSize() {
     let h = Math.max(window.innerHeight / 2 - 100, 200);
@@ -18,6 +19,71 @@ function getSize() {
 	height: h,
     }
 }
+
+function formatNumber(num, width) {
+    var ret = "" + num;
+    while (ret.length < width) {
+	ret = "0" + ret;
+    }
+    return ret;
+}
+
+function debug(str) {
+    if (!console) {
+	return;
+    }
+    if (typeof str == "string") {
+	var d = new Date();
+	console.debug(
+	    d.getFullYear() + "." +
+		formatNumber(d.getMonth() + 1, 2) + "." +
+		formatNumber(d.getDate(), 2) + " " +
+		formatNumber(d.getHours(), 2) + ":" +
+		formatNumber(d.getMinutes(), 2) + ":" +
+		formatNumber(d.getSeconds(), 2) + "." +
+		formatNumber(d.getMilliseconds(), 3) + ": " + str);
+    }
+    else {
+	console.debug(str);
+    }
+}
+
+function request(obj, cb) {
+    debug("request");
+    var req = new XMLHttpRequest();
+    req.onreadystatechange = function() {
+	if (req.readyState == 4) {
+	    if (req.status == 200) {
+		cb(req.responseText);
+	    }
+	    else {
+		cb(null);
+	    }
+	    req = null;
+        }
+    };
+//    req.timeout = 30 * 1000;
+    req.open("POST", "/status", true);
+//    if (binary) {
+//	req.setRequestHeader("Content-Type", "msg");
+//	req.setRequestHeader("Accept-Language", "");
+//	req.responseType = "arraybuffer";
+//    }
+    req.send(obj);
+}
+
+function onRequest(r) {
+    debug("on request " + r);
+    if (r == null) {
+	setTimeout(function () { request(null, onRequest); }, 1000);
+	return;
+    }
+    var el = document.getElementById('status');
+    el.innerText = r;
+    setTimeout(function () { request("hei", onRequest); }, 1000);
+//    request(null, onRequest);
+};
+
 function initSpeedKetchup() {
     let mooSync = uPlot.sync("moo");
     const matchSyncKeys = (own, ext) => own == ext;
@@ -94,13 +160,13 @@ function initSpeedKetchup() {
 	    {
 		label: "Latency While Downloading",
 		value: (u, v) => (v == null ? d2[1][d2[1].length - 1] : v) + "ms",
-		fill: "rgba(255, 0, 0, 0.1)",
+		fill: "rgba(255, 0, 0, 0.3)",
 		...series,
 	    },
 	    {
 		label: "Latency While Uploading",
 		value: (u, v) => (v == null ? d2[2][d2[2].length - 1] : v) + "ms",
-		fill: "rgba(0, 0, 255, 0.1)",
+		fill: "rgba(0, 0, 255, 0.3)",
 		...series,
 	    },
 	    {
@@ -118,6 +184,8 @@ function initSpeedKetchup() {
 	uplot.setSize(getSize());
 	uplot2.setSize(getSize());
     });
+
+    request(null, onRequest);
 }
 window.onload = initSpeedKetchup;
     </script>

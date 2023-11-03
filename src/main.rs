@@ -5,6 +5,7 @@ extern crate libc;
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/***   Ipv6Addr   ********************************/
 #[derive(Debug)]
 struct Ipv6Addr(std::net::Ipv6Addr);
 
@@ -26,9 +27,17 @@ impl std::fmt::Display for Ipv6Addr {
 	}
     }
 }
+impl Default for Ipv6Addr {
+    fn default() -> Ipv6Addr {
+        Ipv6Addr(std::net::Ipv6Addr::from(0_u128))
+    }
+}
 
+
+/***   ErrorString   ********************************/
 
 struct ErrorString(String);
+
 impl std::fmt::Display for ErrorString {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
 	write!(f, "{}", self.0)
@@ -81,6 +90,9 @@ impl From<std::boxed::Box<dyn std::any::Any + std::marker::Send>> for ErrorStrin
     }
 }
 
+
+/***   Point   ********************************/
+
 #[derive(Default, Debug)]
 struct Point {
     x: f32,
@@ -95,11 +107,6 @@ impl Point {
 }
 const DEGREES_TO_KM: f32 = 40075.0 / 360.0;
 
-impl Default for Ipv6Addr {
-    fn default() -> Ipv6Addr {
-        Ipv6Addr(std::net::Ipv6Addr::from(0_u128))
-    }
-}
 
 #[derive(Debug, Default, Clone)]
 struct SpeedTestServer {
@@ -125,6 +132,13 @@ struct SpeedTestResult {
 //    server_id: u32,
 //    server_descr: String,
 //    server_host: String,
+}
+
+struct SpeedTestState {
+    status: String,
+    since: std::time::Instant,
+    expected_until: std::time::Instant,
+    detailed_status: String,
 }
 
 #[allow(dead_code)]
@@ -902,12 +916,12 @@ fn server_get_data(store_filename: &str) -> Result<String, ErrorString> {
     }
     Ok(format!("let data = [{:?}, {:?}, {:?}, {:?}, {:?}, {:?}];", timestamps, lat_idles, lat_dls, lat_uls, downloads, uploads))
 }
-fn server_request(url: &[u8], mut stream: &mut std::net::TcpStream, store_filename: &str) -> Result<(), ErrorString> {
+fn server_request(url: &[u8], _content: &[u8], mut stream: &mut std::net::TcpStream, store_filename: &str) -> Result<(), ErrorString> {
     let duration = std::time::Duration::from_secs(10);
     let now = std::time::Instant::now();
     let url = std::str::from_utf8(url)?;
     pr!("request {url}");
-    let mut _chart_data: String = String::new();
+    let mut _data: String = String::new();
 
     let (data, content_type) = match url {
 	"/" => (ASSET_INDEX_HTML, "text/html; charset=utf-8"),
@@ -916,9 +930,18 @@ fn server_request(url: &[u8], mut stream: &mut std::net::TcpStream, store_filena
 	"/uplot.css" => (ASSET_UPLOT_CSS, "text/css"),
 	"/stain.jpg" => (ASSET_STAIN_JPG, "image/jpg"),
 	"/data.js" => {
-	    _chart_data = server_get_data(store_filename)?;
-	    (_chart_data.as_bytes(), "text/javascript")
-	}
+	    _data = server_get_data(store_filename)?;
+	    (_data.as_bytes(), "text/javascript")
+	},
+	"/status" => {
+	    if _content.len() > 0 {
+		(_content, "text/plain")
+	    }
+	    else {
+		_data = "hello".into();
+		(_data.as_bytes(), "text/plain")
+	    }
+	},
 	_ => ("404".as_bytes(), "text/html"),
     };
 
@@ -956,7 +979,7 @@ Content-Length: {}\r
 	}
     }
 
-    pr!("request done");
+//    pr!("request done");
     Ok(())
 }
 
@@ -966,6 +989,8 @@ fn server_connection(mut stream: std::net::TcpStream, store_filename: &str) -> R
     let mut now = std::time::Instant::now();
     let mut buf = [0_u8; 1024 * 8];
     let mut bytes_read = 0;
+    let mut hdrend_off = 0;
+    let mut content_length: usize = 0;
     loop {
 	let timeout = duration.checked_sub(now.elapsed());
 	if timeout.is_none() {
@@ -983,29 +1008,45 @@ fn server_connection(mut stream: std::net::TcpStream, store_filename: &str) -> R
 		    return Err("read closed".into());
 		}
 		bytes_read += bytes;
-		pr!("read {bytes_read}");
-		if let Some(hdrend_off) = memmem(&buf, b"\r\n\r\n") {
-		    let hdr = &buf[0..hdrend_off];
-//		    pr!("request: {}", std::str::from_utf8(hdr).unwrap());
-		    let mut iter = hdr.split(|c| *c == b' ');
-		    match iter.next() {
-			Some(b"GET") => {
-			    match iter.next() {
-				Some(url) => server_request(url, &mut stream, store_filename)?,
-				_ => return Err("bad request url".into()),
-			    }
-			}
-			_ => return Err("bad request method".into()),
-		    }
-
-		    buf.copy_within((hdrend_off + 4)..bytes_read, 0);
-		    bytes_read -= hdrend_off + 4;
-		    now = std::time::Instant::now();
-		}
-		if bytes_read >= buf.len() {
-		    return Err("read too long req".into());
-		}
+//		pr!("read {bytes_read}");
 	    }
+	}
+	if hdrend_off == 0 {
+	    if let Some(off) = memmem(&buf, b"\r\n\r\n") {
+		hdrend_off = off;
+		let hdr = &buf[0..hdrend_off];
+//		pr!("request: {}", std::str::from_utf8(hdr).unwrap());
+		http_headers(hdr, |hdr_type, hdr_val| {
+		    if hdr_type.to_ascii_lowercase() != b"content-length" {
+			return
+		    }
+		    content_length = std::str::from_utf8(hdr_val).unwrap_or_default().parse().unwrap_or_default();
+		});
+		hdrend_off += 4;
+	    }
+	}
+	if bytes_read >= hdrend_off + content_length {
+	    let hdr = &buf[0..hdrend_off];
+	    let content = &buf[hdrend_off..(hdrend_off + content_length)];
+	    let mut iter = hdr.split(|c| *c == b' ');
+	    match iter.next() {
+		Some(b"GET") | Some(b"POST") => {
+		    match iter.next() {
+			Some(url) => server_request(url, content, &mut stream, store_filename)?,
+			_ => return Err("bad request url".into()),
+		    }
+		}
+		_ => return Err("bad request method".into()),
+	    }
+
+	    buf.copy_within((hdrend_off + content_length)..bytes_read, 0);
+	    bytes_read -= hdrend_off + content_length;
+	    hdrend_off = 0;
+	    content_length = 0;
+	    now = std::time::Instant::now();
+	}
+	if bytes_read >= buf.len() {
+	    return Err("read too long req".into());
 	}
     }
     Ok(())
