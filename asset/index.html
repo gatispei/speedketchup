@@ -10,7 +10,7 @@
   </head>
   <body style="margin: 0; padding: 0; font-family: verdana; font-size: 11px;">
     <img src="stain.jpg" style="position: absolute; left: 0px; top: 0px; z-index: -1;">
-    <pre id="status"></pre>
+    <div id="status"></div>
     <script type="text/javascript">
 function getSize() {
     let h = Math.max(window.innerHeight / 2 - 100, 200);
@@ -62,7 +62,7 @@ function request(obj, cb) {
 	    req = null;
         }
     };
-    req.timeout = 30 * 1000;
+    req.timeout = 60 * 1000;
     req.open("POST", "/status", true);
 //    if (binary) {
 //	req.setRequestHeader("Content-Type", "msg");
@@ -72,17 +72,19 @@ function request(obj, cb) {
     req.send(obj);
 }
 
+var currentStatus = "";
 function onRequest(r) {
     debug("on request " + r);
     var el = document.getElementById('status');
     if (r == null) {
-	el.innerText = "🔴 connection lost";
+	currentStatus = "connection lost";
+	el.innerText = "Status: 🔴 connection lost";
 	setTimeout(function () { request(null, onRequest); }, 1000);
 	return;
     }
-    el.innerText = "🟢 " + r;
-    setTimeout(function () { request("hei", onRequest); }, 1000);
-//    request(null, onRequest);
+    currentStatus = r;
+    el.innerText = "Status: 🟢 " + r;
+    request(currentStatus, onRequest);
 };
 
 function initSpeedKetchup() {

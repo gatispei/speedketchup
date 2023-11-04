@@ -5,7 +5,8 @@ extern crate libc;
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-use std::sync::{Arc, Mutex, PoisonError, MutexGuard};
+use std::sync::{Arc, Mutex, PoisonError, MutexGuard, mpsc};
+use std::collections::hash_map::HashMap;
 
 /***   Ipv6Addr   ********************************/
 #[derive(Debug)]
@@ -147,6 +148,8 @@ struct SpeedTestState {
     expected_until: Option<std::time::Instant>,
     detailed_status: String,
     store_filename: String,
+
+    send_channels: HashMap<std::thread::ThreadId, mpsc::Sender<()>>,
 }
 
 #[allow(dead_code)]
@@ -628,9 +631,18 @@ fn test_latency(
     })
 }
 
+fn set_status(state: &Arc<Mutex<SpeedTestState>>, new_status: &str) ->Result<(), ErrorString> {
+    let mut state = state.lock()?;
+    state.status = new_status.to_string();
+    for (_threadid, tx) in state.send_channels.iter() {
+	let _ = tx.send(());
+    }
+    Ok(())
+}
+
 fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Result<SpeedTestResult, ErrorString> {
     pr!("speedtest");
-    state.lock()?.status = "get provider info".to_string();
+    set_status(state, "get provider info")?;
     let resp = http_get_follow_redirects("www.speedtest.net", "/speedtest-config.php")?;
 //    pr!("status:{} body:{}", http_status_code(&resp)?, http_body(&resp)?);
     let config_xml = http_body(&resp)?;
@@ -758,7 +770,7 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 	    });
 	}
     };
-    state.lock()?.status = "test latency".to_string();
+    set_status(state, "test latency")?;
     servers.truncate(10);
     servers_sort_by_latency(&mut servers)?;
 //    pr!("servers {:#?}", servers);
@@ -767,7 +779,7 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 	.next().ok_or("no good server")?;
     pr!("test server {:?}", server);
 
-    state.lock()?.status = "test download".to_string();
+    set_status(state, "test download")?;
     let download_latency_thread = test_latency(&server.host, download_duration)?;
     let bytes = test_multithread(&server.host, download_duration, &download_sizes, download_threads, test_download)?;
     let download_latency = match download_latency_thread.join()? {
@@ -783,7 +795,7 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
     // allow some time for downloads to stop
     std::thread::sleep(std::time::Duration::from_secs(1));
 
-    state.lock()?.status = "test upload".to_string();
+    set_status(state, "test upload")?;
     let upload_latency_thread = test_latency(&server.host, upload_duration)?;
     let bytes = test_multithread(&server.host, upload_duration, &upload_sizes, upload_threads, test_upload)?;
     let upload_latency = match upload_latency_thread.join()? {
@@ -929,8 +941,9 @@ fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorSt
     }
     Ok(format!("let data = [{:?}, {:?}, {:?}, {:?}, {:?}, {:?}];", timestamps, lat_idles, lat_dls, lat_uls, downloads, uploads))
 }
-fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStream, state: &Arc<Mutex<SpeedTestState>>) -> Result<(), ErrorString> {
-    let duration = std::time::Duration::from_secs(10);
+fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStream, state: &Arc<Mutex<SpeedTestState>>, rx: &mpsc::Receiver<()>) -> Result<(), ErrorString> {
+    let wait_duration = std::time::Duration::from_secs(30);
+    let duration = std::time::Duration::from_secs(60);
     let now = std::time::Instant::now();
     let url = std::str::from_utf8(url)?;
     let content = std::str::from_utf8(content)?;
@@ -948,13 +961,19 @@ fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStre
 	    (_data.as_bytes(), "text/javascript")
 	},
 	"/status" => {
-//	    if content.len() > 0 {
-//		(content, "text/plain")
-//	    }
-//	    else {
-		_data = state.lock()?.status.clone().into();
-		(_data.as_bytes(), "text/plain")
-//	    }
+	    let mut current_status = state.lock()?.status.clone();
+	    if content.len() > 0 && current_status == content {
+		while current_status == content {
+		    let timeout = wait_duration.checked_sub(now.elapsed());
+		    if timeout.is_none() {
+			break;
+		    }
+		    let _ = rx.recv_timeout(timeout.unwrap_or_default());
+		    current_status = state.lock()?.status.clone();
+		}
+	    }
+	    _data = current_status;
+	    (_data.as_bytes(), "text/plain")
 	},
 	_ => ("404".as_bytes(), "text/html"),
     };
@@ -997,7 +1016,7 @@ Content-Length: {}\r
     Ok(())
 }
 
-fn server_connection(mut stream: std::net::TcpStream, state: Arc<Mutex<SpeedTestState>>) -> Result<(), ErrorString> {
+fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTestState>>, rx: mpsc::Receiver<()>) -> Result<(), ErrorString> {
     pr!("new connection");
     let duration = std::time::Duration::from_secs(10);
     let mut now = std::time::Instant::now();
@@ -1006,6 +1025,9 @@ fn server_connection(mut stream: std::net::TcpStream, state: Arc<Mutex<SpeedTest
     let mut hdrend_off = 0;
     let mut content_length: usize = 0;
     loop {
+//	while rx.try_recv().is_ok() {
+	    // clear out status notification queue
+//	}
 	let timeout = duration.checked_sub(now.elapsed());
 	if timeout.is_none() {
 	    return Err("read timeout".into());
@@ -1046,7 +1068,7 @@ fn server_connection(mut stream: std::net::TcpStream, state: Arc<Mutex<SpeedTest
 	    match iter.next() {
 		Some(b"GET") | Some(b"POST") => {
 		    match iter.next() {
-			Some(url) => server_request(url, content, &mut stream, &state)?,
+			Some(url) => server_request(url, content, &mut stream, &state, &rx)?,
 			_ => return Err("bad request url".into()),
 		    }
 		}
@@ -1093,10 +1115,17 @@ fn server(listener: std::net::TcpListener, state: Arc<Mutex<SpeedTestState>>) {
 		    }
 		    Ok(x) => x,
 		};
-		let st = state.clone();
+		let state = state.clone();
 		if let Err(e) = std::thread::Builder::new().name(format!("server-conn-{peer_addr}")).spawn(move || {
-		    if let Err(e) = server_connection(s, st) {
+		    let (tx, rx) = mpsc::channel();
+		    if let Ok(mut state) = state.lock() {
+			state.send_channels.insert(std::thread::current().id(), tx);
+		    }
+		    if let Err(e) = server_connection(s, &state, rx) {
 			pr!("error: {e}");
+		    }
+		    if let Ok(mut state) = state.lock() {
+			state.send_channels.remove(&std::thread::current().id());
 		    }
 		}) {
 		    pr!("thread failed {e}");
@@ -1213,6 +1242,7 @@ fn main() {
 	expected_until: None,
 	detailed_status: String::new(),
 	store_filename: filename.to_string(),
+	send_channels: HashMap::new(),
     }));
 
     {
@@ -1243,9 +1273,7 @@ fn main() {
 	match test_interval.checked_sub(now.elapsed()) {
 	    Some(dur) => {
 		pr!("sleep for {:?}", dur);
-		if let Ok(mut s) = state.lock() {
-		    s.status = "idle".to_string();
-		}
+		let _ = set_status(&state, "idle");
 		std::thread::sleep(dur);
 	    },
 	    None => ()

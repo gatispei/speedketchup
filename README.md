@@ -10,7 +10,7 @@ This aims to be small, efficient all-in-one program (statically linked, includes
 The intent is to allow monitoring of your internet connection as easy as possible.
 You can use speedketchup for one-off test or keep it running continuously to spot any changes in your internet connection.
 
-For your convenience here are prebuilt binaries for some platforms:
+Prebuilt binaries for some platforms:
 - [linux x86_64 binary](bin/speedketchup) (750k)
 - [linux arm binary](bin/speedketchup-arm) (650k)
 - [windows x86_64 binary](bin/speedketchup.exe) (545k)
