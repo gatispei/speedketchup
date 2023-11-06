@@ -9,8 +9,9 @@
     <script type="text/javascript" src="data.js"></script>
   </head>
   <body style="margin: 0; padding: 0; font-family: verdana; font-size: 11px;">
-    <img src="stain.jpg" style="position: absolute; left: 0px; top: 0px; z-index: -1;">
-    <div id="status"></div>
+    <img src="stain.jpg" style="position: absolute; left: 0px; top: 30px; z-index: -1;">
+    <div id="status">X</div>
+    <div id="idle_time">X</div>
     <script type="text/javascript">
 function getSize() {
     let h = Math.max(window.innerHeight / 2 - 100, 200);
@@ -72,21 +73,64 @@ function request(obj, cb) {
     req.send(obj);
 }
 
-var currentStatus = "";
+var stateStr = "";
+var stateObj = {};
 function onRequest(r) {
     debug("on request " + r);
     var el = document.getElementById('status');
     if (r == null) {
-	currentStatus = "connection lost";
+	stateStr = "connection lost";
+	stateObj = {};
 	el.innerText = "Status: 🔴 connection lost";
 	setTimeout(function () { request(null, onRequest); }, 1000);
 	return;
     }
-//    debug(JSON.parse(r));
-    currentStatus = r;
+
+    stateStr = r;
+    obj = JSON.parse(r);
+    debug("old:" + stateObj.state + " new:" + obj.state);
+    if (stateObj.state && stateObj.state != "idle" && obj.state == "idle") {
+	// reload when going idle
+	debug("reload on idle");
+	window.location.reload();
+	return;
+    }
+    stateOld = stateObj;
+    stateObj = obj;
+    if (stateObj.idle_time) {
+	updateIdleTime();
+    }
+    else {
+	cleanupIdleTime();
+    }
     el.innerText = "Status: 🟢 " + r;
-    setTimeout(function () { request(currentStatus, onRequest); }, 100);
+    setTimeout(function () { request(stateStr, onRequest); }, 100);
 };
+
+var idleTimer = null;
+function updateIdleTime() {
+//    debug("updateIdleTime");
+    if (idleTimer) {
+	clearTimeout(idleTimer);
+    }
+    idleTimer = null;
+    var el = document.getElementById('idle_time');
+    var it = stateObj.idle_time;
+    if (it < 0) {
+	cleanupIdleTime();
+	return;
+    }
+    el.innerText = "next test after " + formatNumber(Math.floor(it / 60), 2) + ":" + formatNumber(it % 60, 2);
+    idleTimer = setTimeout(function() { stateObj.idle_time -= 1; updateIdleTime(); }, 1000);
+}
+
+function cleanupIdleTime() {
+    var el = document.getElementById('idle_time');
+    el.innerText = "X";
+    if (idleTimer) {
+	clearTimeout(idleTimer);
+    }
+}
 
 function initSpeedKetchup() {
     let mooSync = uPlot.sync("moo");

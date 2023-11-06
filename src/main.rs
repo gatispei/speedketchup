@@ -154,8 +154,7 @@ struct SpeedTestConfig {
 
 struct SpeedTestState {
     status: String,
-    since: Option<Instant>,
-    expected_until: Option<Instant>,
+    idle_until: Option<Instant>,
     gauge_latency: Option<Duration>,
     gauge_download_progress: Option<u32>,
     gauge_download_mbps: Option<f32>,
@@ -868,6 +867,7 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
     })?;
 
     // allow some time for downloads to stop
+    set_status(state, "test wait")?;
     std::thread::sleep(Duration::from_secs(1));
 
     set_status(state, "test upload")?;
@@ -895,7 +895,7 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 }
 
 fn float_to_str(n: f32) -> String {
-    if n >= 1000.0 {
+    if n >= 1000.0 || n <= 0.0{
 	return format!("{}", n);
     }
     format!("{:.1$}", n, (2 - n.log10().floor() as i32) as usize)
@@ -1023,6 +1023,9 @@ fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorSt
 fn server_get_status(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
     let state = state.lock()?;
     let mut str = format!("{{ \"state\":\"{}\"", state.status);
+    if let Some(x) = state.idle_until {
+	str += &format!(", \"idle_time\": {}", (x - Instant::now()).as_secs());
+    }
     if let Some(x) = state.gauge_latency {
 	str += &format!(", \"latency\": {}", dur_to_str(Some(x)));
     }
@@ -1349,8 +1352,7 @@ fn main() {
 
     let state = Arc::new(Mutex::new(SpeedTestState {
 	status: String::new(),
-	since: None,
-	expected_until: None,
+	idle_until: None,
 	gauge_latency: None,
 	gauge_download_progress: None,
 	gauge_download_mbps: None,
@@ -1373,8 +1375,9 @@ fn main() {
     loop {
 	let now = Instant::now();
 	let mut server_host = None;
-	if let Ok(s) = state.lock() {
-	    server_host = s.config.server_host.clone();
+	if let Ok(mut state) = state.lock() {
+	    server_host = state.config.server_host.clone();
+	    state.idle_until = None;
 	}
 	let result = speedtest(&server_host, &state);
 	match &result {
@@ -1388,19 +1391,19 @@ fn main() {
 	    }
 	};
 	let mut filename = String::new();
-	if let Ok(mut s) = state.lock() {
-	    s.status = "save result".to_string();
-	    test_interval = Duration::from_secs(s.config.test_interval * 60);
-	    filename = s.config.store_filename.clone();
+	if let Ok(mut state) = state.lock() {
+	    state.status = "save result".to_string();
+	    test_interval = Duration::from_secs(state.config.test_interval * 60);
+	    filename = state.config.store_filename.clone();
 	}
 	save_result(&filename, &result);
-	match test_interval.checked_sub(now.elapsed()) {
-	    Some(dur) => {
-		pr!("sleep for {:?}", dur);
-		let _ = set_status(&state, "idle");
-		std::thread::sleep(dur);
-	    },
-	    None => ()
+	if let Some(dur) = test_interval.checked_sub(now.elapsed()) {
+	    pr!("sleep for {:?}", dur);
+	    let _ = set_status(&state, "idle");
+	    if let Ok(mut state) = state.lock() {
+		state.idle_until = Some(Instant::now() + dur);
+	    }
+	    std::thread::sleep(dur);
 	}
     }
 }
