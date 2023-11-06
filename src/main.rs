@@ -125,15 +125,15 @@ struct SpeedTestServer {
 //    url: String,
     id: u32,
     distance: f32,
-    latency: Duration,
+    latency: Option<Duration>,
 }
 
 #[derive(Debug)]
 struct SpeedTestResult {
 //    timestamp: u32,
-    latency_idle: Duration,
-    latency_download: Duration,
-    latency_upload: Duration,
+    latency_idle: Option<Duration>,
+    latency_download: Option<Duration>,
+    latency_upload: Option<Duration>,
     download: f32,
     upload: f32,
     client_public_ip: Ipv6Addr,
@@ -281,7 +281,7 @@ fn url_get_latency<CB>(
     total_dur: Duration,
     intertest_dur: Duration,
     mut cb: Option<CB>)
-    -> Result<Duration, ErrorString>
+    -> Result<Option<Duration>, ErrorString>
 where
     CB: FnMut(Duration) -> ()
 {
@@ -315,10 +315,10 @@ where
 	Some(ret)
     }).collect();
 
-    let mut lat = Duration::MAX;
+    let mut lat = None;
     if latencies.len() > 0 {
 	// assume 2 roundtrips per http request
-	lat = latencies.iter().sum::<Duration>() / latencies.len() as u32;
+	lat = Some(latencies.iter().sum::<Duration>() / latencies.len() as u32);
     }
     pr!("result: {:?} => {:?}ms", latencies, lat);
     Ok(lat)
@@ -327,7 +327,7 @@ where
 fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>) -> Result<(), ErrorString> {
     let threads: Vec<_> = servers.iter().filter_map(|server| {
 	let host = server.host.clone();
-	Some(std::thread::Builder::new().name(format!("test latency {}", server.host)).spawn(move || -> Result<Duration, ErrorString> {
+	Some(std::thread::Builder::new().name(format!("test latency {}", server.host)).spawn(move || -> Result<Option<Duration>, ErrorString> {
 	    url_get_latency(&host, "speedtest/latency.txt", 3,
 			    Duration::from_secs(3),
 			    Duration::from_millis(50),
@@ -629,14 +629,14 @@ fn test_multithread<CB>(
     thread_count: u32,
     func: fn(&str, Duration, &Vec<u32>, progress: &Arc<AtomicUsize>) -> Result<usize, ErrorString>,
     mut cb: CB)
-    -> Result<(f32, Duration), ErrorString>
+    -> Result<(f32, Option<Duration>), ErrorString>
 where
-    CB: FnMut(u32, f32, Duration) -> ()
+    CB: FnMut(u32, f32, Option<Duration>) -> ()
 {
     let h: String = host_str.to_string();
-    let lat_progress = Arc::new(Mutex::new(Duration::MAX));
+    let lat_progress = Arc::new(Mutex::new(Option::None));
     let pr = lat_progress.clone();
-    let latency_thread = std::thread::Builder::new().name(format!("test latency {}", h)).spawn(move || -> Result<Duration, ErrorString> {
+    let latency_thread = std::thread::Builder::new().name(format!("test latency {}", h)).spawn(move || -> Result<Option<Duration>, ErrorString> {
 	let start_delay = Duration::from_millis(500);
 	std::thread::sleep(start_delay);
 	url_get_latency(&h, "speedtest/latency.txt", 10,
@@ -644,7 +644,7 @@ where
 			Duration::from_secs(1),
 			Some(|lat: Duration| {
 			    if let Ok(mut p) = pr.lock() {
-				*p = lat;
+				*p = Some(lat);
 			    }
 			}))
     })?;
@@ -694,7 +694,7 @@ where
 	Ok(l) => l,
 	Err(e) => {
 	    pr!("latency error:{}", e);
-	    Duration::MAX
+	    None
 	},
     };
 
@@ -824,7 +824,7 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 			//                url: n.attribute("url")?.to_string(),
 			id: n.attribute("id")?.parse().ok()?,
 			distance: client_location.distance(&lll) * DEGREES_TO_KM,
-			latency: Duration::MAX,
+			latency: None,
 		    })
 		})
 		.filter(|server| !ignore_servers.contains(&server.id))
@@ -839,7 +839,7 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 		host: x.to_string(),
 		id: 0,
 		distance: 0.0,
-		latency: Duration::MAX,
+		latency: None,
 	    });
 	}
     };
@@ -848,11 +848,11 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
     servers_sort_by_latency(&mut servers)?;
 //    pr!("servers {:#?}", servers);
 
-    let server = servers.iter().filter(|s| s.latency != Duration::MAX)
+    let server = servers.iter().filter(|s| s.latency.is_some() )
 	.next().ok_or("no good server")?;
     pr!("test server {:?}", server);
     if let Ok(mut state) = state.lock() {
-	state.gauge_latency = Some(server.latency);
+	state.gauge_latency = server.latency;
     }
 
     set_status(state, "test download")?;
@@ -860,7 +860,7 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 	if let Ok(mut state) = state.lock() {
 	    state.gauge_download_progress = Some(progress);
 	    state.gauge_download_mbps = Some(speed);
-	    state.gauge_download_latency = Some(latency);
+	    state.gauge_download_latency = latency;
 	    for (_threadid, tx) in state.send_channels.iter() {
 		let _ = tx.send(());
 	    }
@@ -875,7 +875,7 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 	if let Ok(mut state) = state.lock() {
 	    state.gauge_upload_progress = Some(progress);
 	    state.gauge_upload_mbps = Some(speed);
-	    state.gauge_upload_latency = Some(latency);
+	    state.gauge_upload_latency = latency;
 	    for (_threadid, tx) in state.send_channels.iter() {
 		let _ = tx.send(());
 	    }
@@ -894,11 +894,18 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
     })
 }
 
-fn dur_to_csv(n: Duration) -> String {
-    if n == Duration::MAX {
-	return String::new();
+fn float_to_str(n: f32) -> String {
+    if n >= 1000.0 {
+	return format!("{}", n);
     }
-    return format!("{}", n.as_millis())
+    format!("{:.1$}", n, (2 - n.log10().floor() as i32) as usize)
+}
+
+fn dur_to_str(n: Option<Duration>) -> String {
+    match n {
+	None => String::new(),
+	Some(n) => float_to_str(n.as_nanos() as f32 / 1000_000.0),
+    }
 }
 
 const CSV_COLS: &str = "Timestamp,LatencyIdle(ms),LatencyDownload(ms),LatencyUpload(ms),Download(Mbps),Upload(Mbps),ClientPublicIP,ClientISP,ServerDescr,ServerHost,Error\n";
@@ -906,10 +913,10 @@ fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
     let str = match result {
 	Ok(r) => format!("{},{},{},{},{},{},{},\"{}\",\"{}\",{},\n",
 			 timestr(),
-			 dur_to_csv(r.latency_idle),
-			 dur_to_csv(r.latency_download),
-			 dur_to_csv(r.latency_upload),
-			 r.download, r.upload,
+			 dur_to_str(r.latency_idle),
+			 dur_to_str(r.latency_download),
+			 dur_to_str(r.latency_upload),
+			 float_to_str(r.download), float_to_str(r.upload),
 			 r.client_public_ip, r.client_isp,
 			 r.server.descr, r.server.host),
 	Err(e) => format!("{},,,,,,,,,,{e}\n", timestr()),
@@ -937,13 +944,13 @@ const ASSET_UPLOT_JS: &[u8] = include_bytes!("../asset/uplot.js");
 const ASSET_UPLOT_CSS: &[u8] = include_bytes!("../asset/uplot.css");
 const ASSET_STAIN_JPG: &[u8] = include_bytes!("../asset/stain.jpg");
 
-struct JSu32(Duration);
-impl std::fmt::Debug for JSu32 {
+struct JSDur(Option<Duration>);
+impl std::fmt::Debug for JSDur {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-	if self.0 == Duration::MAX {
-	    return write!(f, "null")
+	match self.0 {
+	    None => write!(f, "null"),
+	    Some(_) => write!(f, "{}", dur_to_str(self.0)),
 	}
-	write!(f, "{}", self.0.as_millis())
     }
 }
 struct JSf32(f32);
@@ -952,7 +959,7 @@ impl std::fmt::Debug for JSf32 {
 	if self.0.is_nan() {
 	    return write!(f, "null")
 	}
-	write!(f, "{}", self.0)
+	write!(f, "{}", float_to_str(self.0))
     }
 }
 fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
@@ -961,9 +968,9 @@ fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorSt
     let mut it = std::str::from_utf8(data)?.lines();
     it.next();
     let mut timestamps: Vec<u32> = vec!();
-    let mut lat_idles: Vec<JSu32> = vec!();
-    let mut lat_dls: Vec<JSu32> = vec!();
-    let mut lat_uls: Vec<JSu32> = vec!();
+    let mut lat_idles: Vec<JSDur> = vec!();
+    let mut lat_dls: Vec<JSDur> = vec!();
+    let mut lat_uls: Vec<JSDur> = vec!();
     let mut downloads: Vec<JSf32> = vec!();
     let mut uploads: Vec<JSf32> = vec!();
     while let Some(line) = it.next() {
@@ -975,17 +982,17 @@ fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorSt
 	    Err(_) => continue,
 	    Ok(t) => t,
 	};
-	let lat_idle = match x[1].parse::<u64>() {
-	    Err(_) => Duration::MAX,
-	    Ok(t) => Duration::from_millis(t),
+	let lat_idle = match x[1].parse::<f32>() {
+	    Err(_) => None,
+	    Ok(t) => Some(Duration::from_nanos((t * 1000_000.0) as u64)),
 	};
-	let lat_dl = match x[2].parse::<u64>() {
-	    Err(_) => Duration::MAX,
-	    Ok(t) => Duration::from_millis(t),
+	let lat_dl = match x[2].parse::<f32>() {
+	    Err(_) => None,
+	    Ok(t) => Some(Duration::from_nanos((t * 1000_000.0) as u64)),
 	};
-	let lat_ul = match x[3].parse::<u64>() {
-	    Err(_) => Duration::MAX,
-	    Ok(t) => Duration::from_millis(t),
+	let lat_ul = match x[3].parse::<f32>() {
+	    Err(_) => None,
+	    Ok(t) => Some(Duration::from_nanos((t * 1000_000.0) as u64)),
 	};
 	let dl = match x[4].parse::<f32>() {
 	    Err(_) => f32::NAN,
@@ -997,16 +1004,16 @@ fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorSt
 	};
 	if timestamps.len() == 0 {
 	    timestamps.push(time - 10);
-	    lat_idles.push(JSu32(lat_idle));
-	    lat_dls.push(JSu32(lat_dl));
-	    lat_uls.push(JSu32(lat_ul));
+	    lat_idles.push(JSDur(lat_idle));
+	    lat_dls.push(JSDur(lat_dl));
+	    lat_uls.push(JSDur(lat_ul));
 	    downloads.push(JSf32(dl));
 	    uploads.push(JSf32(ul));
 	}
 	timestamps.push(time);
-	lat_idles.push(JSu32(lat_idle));
-	lat_dls.push(JSu32(lat_dl));
-	lat_uls.push(JSu32(lat_ul));
+	lat_idles.push(JSDur(lat_idle));
+	lat_dls.push(JSDur(lat_dl));
+	lat_uls.push(JSDur(lat_ul));
 	downloads.push(JSf32(dl));
 	uploads.push(JSf32(ul));
     }
@@ -1016,26 +1023,26 @@ fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorSt
 fn server_get_status(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
     let state = state.lock()?;
     let mut str = format!("{{ \"state\":\"{}\"", state.status);
-    if let Some(latency) = state.gauge_latency {
-	str += &format!(", \"latency\": {}", latency.as_micros() as f32 / 1000.0);
+    if let Some(x) = state.gauge_latency {
+	str += &format!(", \"latency\": {}", dur_to_str(Some(x)));
     }
     if let Some(x) = state.gauge_download_progress {
 	str += &format!(", \"download_progress\": {}", x);
     }
     if let Some(x) = state.gauge_download_mbps {
-	str += &format!(", \"download_mbps\": {}", x);
+	str += &format!(", \"download_mbps\": {}", float_to_str(x));
     }
     if let Some(x) = state.gauge_download_latency {
-	str += &format!(", \"download_latency\": {}", x.as_micros() as f32 / 1000.0);
+	str += &format!(", \"download_latency\": {}", dur_to_str(Some(x)));
     }
     if let Some(x) = state.gauge_upload_progress {
 	str += &format!(", \"upload_progress\": {}", x);
     }
     if let Some(x) = state.gauge_upload_mbps {
-	str += &format!(", \"upload_mbps\": {}", x);
+	str += &format!(", \"upload_mbps\": {}", float_to_str(x));
     }
     if let Some(x) = state.gauge_upload_latency {
-	str += &format!(", \"upload_latency\": {}", x.as_micros() as f32 / 1000.0);
+	str += &format!(", \"upload_latency\": {}", dur_to_str(Some(x)));
     }
     str += " }";
     Ok(str)
@@ -1377,7 +1384,7 @@ fn main() {
 	    Ok(r) => {
 //		pr!("result: {:#?}", r);
 		pr!("speedtest latency:idle-{}ms/dl-{}ms/ul-{}ms download:{}Mbps upload:{}Mbps client_ip:{} isp:{} server:{}",
-		    r.latency_idle.as_millis(), r.latency_download.as_millis(), r.latency_upload.as_millis(), r.download, r.upload, r.client_public_ip, r.client_isp, r.server.host);
+		    dur_to_str(r.latency_idle), dur_to_str(r.latency_download), dur_to_str(r.latency_upload), r.download, r.upload, r.client_public_ip, r.client_isp, r.server.host);
 	    }
 	};
 	let mut filename = String::new();
