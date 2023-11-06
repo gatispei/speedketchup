@@ -6,6 +6,7 @@ const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use std::sync::{Arc, Mutex, PoisonError, MutexGuard, mpsc};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::hash_map::HashMap;
 use std::time::{Duration, Instant};
 
@@ -156,9 +157,11 @@ struct SpeedTestState {
     since: Option<Instant>,
     expected_until: Option<Instant>,
     gauge_latency: Option<Duration>,
-    gauge_download_speed: Option<f32>,
+    gauge_download_progress: Option<u32>,
+    gauge_download_mbps: Option<f32>,
     gauge_download_latency: Option<Duration>,
-    gauge_upload_speed: Option<f32>,
+    gauge_upload_progress: Option<u32>,
+    gauge_upload_mbps: Option<f32>,
     gauge_upload_latency: Option<Duration>,
 
     config: SpeedTestConfig,
@@ -283,21 +286,24 @@ where
     CB: FnMut(Duration) -> ()
 {
     let now = Instant::now();
+    let mut lat_tot = Duration::from_secs(0);
+    let mut samples = 0;
     let latencies: Vec<_> = (0..max_iters).filter_map(|_i| {
 	let mut timeout = total_dur.checked_sub(now.elapsed())?;
-	let ret = match duration(|| {
+	let mut ret = match duration(|| {
 	    http_request(host, path, "GET", "", timeout, 0, None::<fn(&[u8])>, None::<fn(usize)>)
 	}) {
 	    Err(e) => {
 		pr!("error: {}", e);
-		None
+		return None;
 	    },
-	    Ok(r) => Some(r)
+	    Ok(r) => r
 	};
-	if let Some(ret) = ret {
-	    if let Some(ref mut cb) = cb {
-		cb(ret);
-	    }
+	ret /= 2;
+	lat_tot += ret;
+	samples += 1;
+	if let Some(ref mut cb) = cb {
+	    cb(lat_tot / samples);
 	}
 	timeout = total_dur.checked_sub(now.elapsed())?;
 	if timeout >= intertest_dur {
@@ -306,13 +312,13 @@ where
 	else {
 	    std::thread::sleep(timeout);
 	}
-	ret
+	Some(ret)
     }).collect();
 
     let mut lat = Duration::MAX;
     if latencies.len() > 0 {
 	// assume 2 roundtrips per http request
-	lat = latencies.iter().sum::<Duration>() / 2 / latencies.len() as u32;
+	lat = latencies.iter().sum::<Duration>() / latencies.len() as u32;
     }
     pr!("result: {:?} => {:?}ms", latencies, lat);
     Ok(lat)
@@ -558,7 +564,7 @@ fn http_get_follow_redirects(host: &str, path: &str) -> Result<Vec<u8>, ErrorStr
     }
 }
 
-fn test_download(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress: &Arc<Mutex<usize>>) -> Result<usize, ErrorString> {
+fn test_download(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress: &Arc<AtomicUsize>) -> Result<usize, ErrorString> {
     let mut bytes = 0;
     let now = Instant::now();
     let mut i = 0;
@@ -571,9 +577,7 @@ fn test_download(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress:
 		let size = sizes[i];
 		let path = format!("speedtest/random{size}x{size}.jpg");
 		match http_request(host_str, &path, "GET", "Cache-Control: no-cache\r\n", t, 0, Some(|buf: &[u8]| {
-		    if let Ok(mut p) = progress.lock() {
-			*p += buf.len();
-		    }
+		    progress.fetch_add(buf.len(), Ordering::Relaxed);
 		    bytes += buf.len()
 		}), None::<fn(usize)>) {
 		    Err(err) => pr!("http error: {err}"),
@@ -588,7 +592,7 @@ fn test_download(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress:
     Ok(bytes)
 }
 
-fn test_upload(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress: &Arc<Mutex<usize>>) -> Result<usize, ErrorString> {
+fn test_upload(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress: &Arc<AtomicUsize>) -> Result<usize, ErrorString> {
     let mut bytes = 0;
     let now = Instant::now();
     let mut i = 0;
@@ -601,9 +605,7 @@ fn test_upload(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress: &
 		let size = sizes[i];
 		let path = "speedtest/upload.php";
 		bytes += match http_request(host_str, &path, "POST", &format!("Content-Length: {size}\r\n"), t, size as usize, None::<fn(&[u8])>, Some(|b: usize| {
-		    if let Ok(mut p) = progress.lock() {
-			*p += b;
-		    }
+		    progress.fetch_add(b, Ordering::Relaxed);
 		})) {
 		    Err(err) => {
 			pr!("http error: {err}");
@@ -620,14 +622,36 @@ fn test_upload(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress: &
     Ok(bytes)
 }
 
-fn test_multithread(
+fn test_multithread<CB>(
+    test_type: &str,
     host_str: &str,
     duration: Duration, sizes: &Vec<u32>,
     thread_count: u32,
-    func: fn(&str, Duration, &Vec<u32>, &Arc<Mutex<usize>>) -> Result<usize, ErrorString>)
-    -> Result<Vec<usize>, ErrorString> {
+    func: fn(&str, Duration, &Vec<u32>, progress: &Arc<AtomicUsize>) -> Result<usize, ErrorString>,
+    mut cb: CB)
+    -> Result<(f32, Duration), ErrorString>
+where
+    CB: FnMut(u32, f32, Duration) -> ()
+{
+    let h: String = host_str.to_string();
+    let lat_progress = Arc::new(Mutex::new(Duration::MAX));
+    let pr = lat_progress.clone();
+    let latency_thread = std::thread::Builder::new().name(format!("test latency {}", h)).spawn(move || -> Result<Duration, ErrorString> {
+	let start_delay = Duration::from_millis(500);
+	std::thread::sleep(start_delay);
+	url_get_latency(&h, "speedtest/latency.txt", 10,
+			duration.checked_sub(start_delay).ok_or("test duration too short for latency test")?,
+			Duration::from_secs(1),
+			Some(|lat: Duration| {
+			    if let Ok(mut p) = pr.lock() {
+				*p = lat;
+			    }
+			}))
+    })?;
+
     pr!("test_multithread host:{host_str} duration:{:?} threads:{thread_count} func:{:?}", duration, func);
-    let progress = Arc::new(Mutex::new(0));
+    let now = Instant::now();
+    let progress = Arc::new(AtomicUsize::new(0));
 
     let threads: Vec<_> = (0..thread_count).filter_map(|i| {
 	let sh: String = host_str.into();
@@ -647,6 +671,17 @@ fn test_multithread(
 	    }
 	}).ok()?)
     }).collect();
+
+    for _ in 0..(duration.as_millis() / 100) {
+	std::thread::sleep(Duration::from_millis(100));
+	let bytes = progress.load(Ordering::Relaxed) as u64;
+	if let Ok(lat) = lat_progress.lock() {
+	    cb(now.elapsed().as_millis() as u32 * 100 / duration.as_millis() as u32,
+	       (bytes * 8 / now.elapsed().as_millis() as u64) as f32 / 1000.0,
+	       *lat);
+	}
+    }
+
     let mut bytes = vec!();
     for thread in threads {
 	match thread.join() {
@@ -654,23 +689,19 @@ fn test_multithread(
 	    Err(err) => pr!("thread join failed: {:?}", err),
 	}
     }
-    Ok(bytes)
-}
 
-fn test_latency(
-    host: &str,
-    duration: Duration)
-    -> Result<std::thread::JoinHandle<Result<Duration, ErrorString>>, std::io::Error> {
+    let latency = match latency_thread.join()? {
+	Ok(l) => l,
+	Err(e) => {
+	    pr!("latency error:{}", e);
+	    Duration::MAX
+	},
+    };
 
-    let h: String = host.to_string();
-    std::thread::Builder::new().name(format!("test latency {}", h)).spawn(move || -> Result<Duration, ErrorString> {
-	let start_delay = Duration::from_millis(500);
-	std::thread::sleep(start_delay);
-	url_get_latency(&h, "speedtest/latency.txt", 10,
-			duration.checked_sub(start_delay).ok_or("test duration too short for latency test")?,
-			Duration::from_secs(1),
-			None::<fn(Duration)>)
-    })
+    let mbps = (bytes.iter().sum::<usize>() as u64 * 8 / duration.as_millis() as u64) as f32 / 1000.0;
+    cb(100, mbps, latency);
+    pr!("{test_type} mbps:{mbps} bytes:{:?}", bytes);
+    Ok((mbps, latency))
 }
 
 fn set_status(state: &Arc<Mutex<SpeedTestState>>, new_status: &str) ->Result<(), ErrorString> {
@@ -820,40 +851,38 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
     let server = servers.iter().filter(|s| s.latency != Duration::MAX)
 	.next().ok_or("no good server")?;
     pr!("test server {:?}", server);
+    if let Ok(mut state) = state.lock() {
+	state.gauge_latency = Some(server.latency);
+    }
 
     set_status(state, "test download")?;
-    let download_latency_thread = test_latency(&server.host, download_duration)?;
-    let bytes = test_multithread(&server.host, download_duration, &download_sizes, download_threads, test_download)?;
-    let download_latency = match download_latency_thread.join()? {
-	Ok(l) => l,
-	Err(e) => {
-	    pr!("download latency error:{}", e);
-	    Duration::MAX
-	},
-    };
-    let download_mbps = (bytes.iter().sum::<usize>() as u64 * 8 / download_duration.as_millis() as u64) as f32 / 1000.0;
-    pr!("download mbps:{download_mbps} bytes:{:?}", bytes);
+    let (download_mbps, download_latency) = test_multithread("download", &server.host, download_duration, &download_sizes, download_threads, test_download, |progress, speed, latency|{
+	if let Ok(mut state) = state.lock() {
+	    state.gauge_download_progress = Some(progress);
+	    state.gauge_download_mbps = Some(speed);
+	    state.gauge_download_latency = Some(latency);
+	    for (_threadid, tx) in state.send_channels.iter() {
+		let _ = tx.send(());
+	    }
+	}
+    })?;
 
     // allow some time for downloads to stop
     std::thread::sleep(Duration::from_secs(1));
 
     set_status(state, "test upload")?;
-    let upload_latency_thread = test_latency(&server.host, upload_duration)?;
-    let bytes = test_multithread(&server.host, upload_duration, &upload_sizes, upload_threads, test_upload)?;
-    let upload_latency = match upload_latency_thread.join()? {
-	Ok(l) => l,
-	Err(e) => {
-	    pr!("upload latency error:{}", e);
-	    Duration::MAX
-	},
-    };
-    let upload_mbps = (bytes.iter().sum::<usize>() as u64 * 8 / upload_duration.as_millis() as u64) as f32 / 1000.0;
-    pr!("upload mbps:{upload_mbps} bytes:{:?}", bytes);
-//    url_upload(&server.host, "speedtest/upload.php", upload_duration, 1000)?;
+    let (upload_mbps, upload_latency) = test_multithread("upload", &server.host, upload_duration, &upload_sizes, upload_threads, test_upload, |progress, speed, latency|{
+	if let Ok(mut state) = state.lock() {
+	    state.gauge_upload_progress = Some(progress);
+	    state.gauge_upload_mbps = Some(speed);
+	    state.gauge_upload_latency = Some(latency);
+	    for (_threadid, tx) in state.send_channels.iter() {
+		let _ = tx.send(());
+	    }
+	}
+    })?;
 
-//    let timestamp = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() as u32;
     Ok(SpeedTestResult {
-//	timestamp: timestamp,
 	latency_idle: server.latency,
 	latency_download: download_latency,
 	latency_upload: upload_latency,
@@ -983,13 +1012,42 @@ fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorSt
     }
     Ok(format!("let data = [{:?}, {:?}, {:?}, {:?}, {:?}, {:?}];", timestamps, lat_idles, lat_dls, lat_uls, downloads, uploads))
 }
+
+fn server_get_status(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
+    let state = state.lock()?;
+    let mut str = format!("{{ \"state\":\"{}\"", state.status);
+    if let Some(latency) = state.gauge_latency {
+	str += &format!(", \"latency\": {}", latency.as_micros() as f32 / 1000.0);
+    }
+    if let Some(x) = state.gauge_download_progress {
+	str += &format!(", \"download_progress\": {}", x);
+    }
+    if let Some(x) = state.gauge_download_mbps {
+	str += &format!(", \"download_mbps\": {}", x);
+    }
+    if let Some(x) = state.gauge_download_latency {
+	str += &format!(", \"download_latency\": {}", x.as_micros() as f32 / 1000.0);
+    }
+    if let Some(x) = state.gauge_upload_progress {
+	str += &format!(", \"upload_progress\": {}", x);
+    }
+    if let Some(x) = state.gauge_upload_mbps {
+	str += &format!(", \"upload_mbps\": {}", x);
+    }
+    if let Some(x) = state.gauge_upload_latency {
+	str += &format!(", \"upload_latency\": {}", x.as_micros() as f32 / 1000.0);
+    }
+    str += " }";
+    Ok(str)
+}
+
 fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStream, state: &Arc<Mutex<SpeedTestState>>, rx: &mpsc::Receiver<()>) -> Result<(), ErrorString> {
     let wait_duration = Duration::from_secs(30);
     let duration = Duration::from_secs(60);
     let now = Instant::now();
     let url = std::str::from_utf8(url)?;
     let content = std::str::from_utf8(content)?;
-    pr!("request {url} {content}");
+//    pr!("request {url} {content}");
     let mut _data: String = String::new();
 
     let (data, content_type) = match url {
@@ -1003,7 +1061,8 @@ fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStre
 	    (_data.as_bytes(), "text/javascript")
 	},
 	"/status" => {
-	    let mut current_status = state.lock()?.status.clone();
+//	    let mut current_status = state.lock()?.status.clone();
+	    let mut current_status = server_get_status(state)?;
 	    if content.len() > 0 && current_status == content {
 		while current_status == content {
 		    let timeout = wait_duration.checked_sub(now.elapsed());
@@ -1011,7 +1070,7 @@ fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStre
 			break;
 		    }
 		    let _ = rx.recv_timeout(timeout.unwrap_or_default());
-		    current_status = state.lock()?.status.clone();
+		    current_status = server_get_status(state)?;
 		}
 	    }
 	    _data = current_status;
@@ -1286,9 +1345,11 @@ fn main() {
 	since: None,
 	expected_until: None,
 	gauge_latency: None,
-	gauge_download_speed: None,
+	gauge_download_progress: None,
+	gauge_download_mbps: None,
 	gauge_download_latency: None,
-	gauge_upload_speed: None,
+	gauge_upload_progress: None,
+	gauge_upload_mbps: None,
 	gauge_upload_latency: None,
 	config: config,
 	send_channels: HashMap::new(),

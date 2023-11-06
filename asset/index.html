@@ -82,9 +82,10 @@ function onRequest(r) {
 	setTimeout(function () { request(null, onRequest); }, 1000);
 	return;
     }
+//    debug(JSON.parse(r));
     currentStatus = r;
     el.innerText = "Status: 🟢 " + r;
-    request(currentStatus, onRequest);
+    setTimeout(function () { request(currentStatus, onRequest); }, 100);
 };
 
 function initSpeedKetchup() {
