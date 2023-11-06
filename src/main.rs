@@ -142,12 +142,25 @@ struct SpeedTestResult {
 //    server_host: String,
 }
 
+struct SpeedTestConfig {
+    test_interval: u64,
+    store_filename: String,
+    listen_port: u16,
+    listen_address: String,
+    server_host: Option<String>,
+}
+
 struct SpeedTestState {
     status: String,
     since: Option<std::time::Instant>,
     expected_until: Option<std::time::Instant>,
-    detailed_status: String,
-    store_filename: String,
+    gauge_latency: Option<u32>,
+    gauge_download_speed: Option<f32>,
+    gauge_download_latency: Option<u32>,
+    gauge_upload_speed: Option<f32>,
+    gauge_upload_latency: Option<u32>,
+
+    config: SpeedTestConfig,
 
     send_channels: HashMap<std::thread::ThreadId, mpsc::Sender<()>>,
 }
@@ -257,18 +270,22 @@ fn duration<F, T>(work: F) -> Result<u32, ErrorString> where
     Ok(now.elapsed().as_millis() as u32)
 }
 
-fn url_get_latency(
+fn url_get_latency<CB>(
     host: &str,
     path: &str,
     max_iters: u32,
     total_dur: std::time::Duration,
-    intertest_dur: std::time::Duration)
-    -> Result<u32, ErrorString> {
+    intertest_dur: std::time::Duration,
+    mut cb: Option<CB>)
+    -> Result<u32, ErrorString>
+where
+    CB: FnMut(u32) -> ()
+{
     let now = std::time::Instant::now();
     let latencies: Vec<_> = (0..max_iters).filter_map(|_i| {
 	let mut timeout = total_dur.checked_sub(now.elapsed())?;
 	let ret = match duration(|| {
-	    http_request(host, path, "GET", "", timeout, 0, dummy_cb)
+	    http_request(host, path, "GET", "", timeout, 0, None::<fn(&[u8])>, None::<fn(usize)>)
 	}) {
 	    Err(e) => {
 		pr!("error: {}", e);
@@ -276,6 +293,11 @@ fn url_get_latency(
 	    },
 	    Ok(r) => Some(r)
 	};
+	if let Some(ret) = ret {
+	    if let Some(ref mut cb) = cb {
+		cb(ret);
+	    }
+	}
 	timeout = total_dur.checked_sub(now.elapsed())?;
 	if timeout >= intertest_dur {
 	    std::thread::sleep(intertest_dur);
@@ -301,7 +323,8 @@ fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>) -> Result<(), Err
 	Some(std::thread::Builder::new().name(format!("test latency {}", server.host)).spawn(move || -> Result<u32, ErrorString> {
 	    url_get_latency(&host, "speedtest/latency.txt", 3,
 			    std::time::Duration::from_secs(3),
-			    std::time::Duration::from_millis(50))
+			    std::time::Duration::from_millis(50),
+			    None::<fn(u32)>)
 	}).ok()?)
     }).collect();
     let mut latencies = vec![];
@@ -318,20 +341,20 @@ fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>) -> Result<(), Err
     Ok(())
 }
 
-fn dummy_cb(_: &[u8]) {
-}
 //#[inline(never)]
-fn http_request<READ>(
+fn http_request<READ, WRITE>(
     host: &str,
     path: &str,
     method: &str,
     extra_headers: &str,
     duration: std::time::Duration,
     send_data_size: usize,
-    mut read_cb: READ)
+    mut read_cb: Option<READ>,
+    mut write_cb: Option<WRITE>)
     -> Result<usize, ErrorString>
 where
-    READ: FnMut(&[u8]) -> ()
+    READ: FnMut(&[u8]) -> (),
+    WRITE: FnMut(usize) -> ()
 {
     let now = std::time::Instant::now();
     let sock_addr = match std::net::ToSocketAddrs::to_socket_addrs(host) {
@@ -385,7 +408,10 @@ Connection: close\r
 		    break
 		}
 //		pr!("write {ret}");
-		bytes_written += ret
+		bytes_written += ret;
+		if let Some(ref mut cb) = write_cb {
+		    cb(ret);
+		}
 	    }
 	}
     }
@@ -409,7 +435,9 @@ Connection: close\r
 //		    pr!("read done");
 		    break
 		}
-		read_cb(&buf[0..bytes_read]);
+		if let Some(ref mut cb) = read_cb {
+		    cb(&buf[0..bytes_read]);
+		}
 //		pr!("read {bytes_read}");
 	    }
 	}
@@ -421,9 +449,9 @@ Connection: close\r
 fn http_get(host: &str, path: &str) -> Result<Vec<u8>, ErrorString> {
     let dur = std::time::Duration::from_secs(3);
     let mut resp: Vec<u8> = Vec::new();
-    http_request(host, path, "GET", "", dur, 0, |buf| {
+    http_request(host, path, "GET", "", dur, 0, Some(|buf: &[u8]| {
 	resp.extend_from_slice(buf);
-    })?;
+    }), None::<fn(usize)>)?;
     Ok(resp)
 }
 fn http_status_code(resp: &[u8]) -> Result<u32, ErrorString> {
@@ -529,7 +557,7 @@ fn http_get_follow_redirects(host: &str, path: &str) -> Result<Vec<u8>, ErrorStr
     }
 }
 
-fn test_download(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>) -> Result<usize, ErrorString> {
+fn test_download(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>, progress: &Arc<Mutex<usize>>) -> Result<usize, ErrorString> {
     let mut bytes = 0;
     let now = std::time::Instant::now();
     let mut i = 0;
@@ -541,7 +569,12 @@ fn test_download(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>
 	    Some(t) => {
 		let size = sizes[i];
 		let path = format!("speedtest/random{size}x{size}.jpg");
-		match http_request(host_str, &path, "GET", "Cache-Control: no-cache\r\n", t, 0, |buf| bytes += buf.len()) {
+		match http_request(host_str, &path, "GET", "Cache-Control: no-cache\r\n", t, 0, Some(|buf: &[u8]| {
+		    if let Ok(mut p) = progress.lock() {
+			*p += buf.len();
+		    }
+		    bytes += buf.len()
+		}), None::<fn(usize)>) {
 		    Err(err) => pr!("http error: {err}"),
 		    Ok(_) => ()
 		}
@@ -554,7 +587,7 @@ fn test_download(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>
     Ok(bytes)
 }
 
-fn test_upload(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>) -> Result<usize, ErrorString> {
+fn test_upload(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>, progress: &Arc<Mutex<usize>>) -> Result<usize, ErrorString> {
     let mut bytes = 0;
     let now = std::time::Instant::now();
     let mut i = 0;
@@ -566,7 +599,11 @@ fn test_upload(host_str: &str, duration: std::time::Duration, sizes: &Vec<u32>) 
 	    Some(t) => {
 		let size = sizes[i];
 		let path = "speedtest/upload.php";
-		bytes += match http_request(host_str, &path, "POST", &format!("Content-Length: {size}\r\n"), t, size as usize, dummy_cb) {
+		bytes += match http_request(host_str, &path, "POST", &format!("Content-Length: {size}\r\n"), t, size as usize, None::<fn(&[u8])>, Some(|b: usize| {
+		    if let Ok(mut p) = progress.lock() {
+			*p += b;
+		    }
+		})) {
 		    Err(err) => {
 			pr!("http error: {err}");
 			0
@@ -586,15 +623,18 @@ fn test_multithread(
     host_str: &str,
     duration: std::time::Duration, sizes: &Vec<u32>,
     thread_count: u32,
-    func: fn(&str, std::time::Duration, &Vec<u32>) -> Result<usize, ErrorString>)
+    func: fn(&str, std::time::Duration, &Vec<u32>, &Arc<Mutex<usize>>) -> Result<usize, ErrorString>)
     -> Result<Vec<usize>, ErrorString> {
     pr!("test_multithread host:{host_str} duration:{:?} threads:{thread_count} func:{:?}", duration, func);
+    let progress = Arc::new(Mutex::new(0));
+
     let threads: Vec<_> = (0..thread_count).filter_map(|i| {
 	let sh: String = host_str.into();
 	let ds = sizes.clone();
 
+	let progress = progress.clone();
 	Some(std::thread::Builder::new().name(format!("test{i}")).spawn(move || -> usize {
-	    match func(&sh, duration, &ds) {
+	    match func(&sh, duration, &ds, &progress) {
 		Ok(bytes) => {
 //		    pr!("bytes:{bytes}");
 		    bytes
@@ -627,7 +667,8 @@ fn test_latency(
 	std::thread::sleep(start_delay);
 	url_get_latency(&h, "speedtest/latency.txt", 10,
 			duration.checked_sub(start_delay).ok_or("test duration too short for latency test")?,
-			std::time::Duration::from_secs(1))
+			std::time::Duration::from_secs(1),
+			None::<fn(u32)>)
     })
 }
 
@@ -885,7 +926,7 @@ impl std::fmt::Debug for JSf32 {
     }
 }
 fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
-    let filename = state.lock()?.store_filename.clone();
+    let filename = state.lock()?.config.store_filename.clone();
     let data = &std::fs::read(&filename)?;
     let mut it = std::str::from_utf8(data)?.lines();
     it.next();
@@ -1155,11 +1196,13 @@ fn exit(str: &str, code: i32) -> ! {
     std::process::exit(code);
 }
 fn main() {
-    let mut test_interval: u64 = 10;
-    let mut filename = "speedketchup-results.csv";
-    let mut listen_port: u16 = 8080;
-    let mut listen_address = "127.0.0.1";
-    let mut server_host: Option<String> = None;
+    let mut config = SpeedTestConfig {
+	test_interval: 10,
+	store_filename: "speedketchup-results.csv".to_string(),
+	listen_port: 8080,
+	listen_address: "127.0.0.1".to_string(),
+	server_host: None,
+    };
 
     let args = std::env::args().collect::<Vec<_>>();
     let mut it = args.iter();
@@ -1169,7 +1212,7 @@ fn main() {
 	    "-h" | "--help" => exit(HELP, 0),
 	    "-v" | "--version" => exit(PKG_VERSION, 0),
 	    "-i" | "--interval" => {
-		test_interval = match it.next() {
+		config.test_interval = match it.next() {
 		    Some(x) => match x.parse() {
 			Ok(i) => i,
 			Err(_) => exit("bad interval", -1),
@@ -1178,19 +1221,19 @@ fn main() {
 		}
 	    },
 	    "-f" | "--file" => {
-		filename = match it.next() {
-		    Some(x) => x,
+		config.store_filename = match it.next() {
+		    Some(x) => x.clone(),
 		    None => exit("no filename given", -1),
 		}
 	    },
 	    "-a" | "--address" => {
-		listen_address = match it.next() {
-		    Some(x) => x,
+		config.listen_address = match it.next() {
+		    Some(x) => x.clone(),
 		    None => exit("no address given", -1),
 		}
 	    },
 	    "-p" | "--port" => {
-		listen_port = match it.next() {
+		config.listen_port = match it.next() {
 		    Some(x) => match x.parse() {
 			Ok(i) => i,
 			Err(_) => exit("bad port", -1),
@@ -1199,7 +1242,7 @@ fn main() {
 		}
 	    },
 	    "-s" | "--server" => {
-		server_host = match it.next() {
+		config.server_host = match it.next() {
 		    Some(x) => {
 			match x.find(":") {
 			    Some(_off) => Some(x.to_string()),
@@ -1215,16 +1258,17 @@ fn main() {
 
     std::env::set_var("RUST_BACKTRACE", "1");
     println!("speedketchup parameters (run with '-h' to see options):");
-    println!("{ATTR_GREEN}test interval: {ATTR_BOLD}{test_interval}m{ATTR_RESET}");
-    println!("{ATTR_GREEN}results file: {ATTR_BOLD}{filename}{ATTR_RESET}");
-    println!("{ATTR_GREEN}listen address: {ATTR_BOLD}{listen_address}:{listen_port}{ATTR_RESET}");
+    println!("{ATTR_GREEN}test interval: {ATTR_BOLD}{}m{ATTR_RESET}", config.test_interval);
+    println!("{ATTR_GREEN}results file: {ATTR_BOLD}{}{ATTR_RESET}", config.store_filename);
+    println!("{ATTR_GREEN}listen address: {ATTR_BOLD}{}:{}{ATTR_RESET}",
+	     config.listen_address, config.listen_port);
     println!("{ATTR_GREEN}server: {ATTR_BOLD}{}{ATTR_RESET}",
-	     match &server_host { None => "<automatic>", Some(x) => &x });
-    let sk_url = &format!("http://127.0.0.1:{listen_port}");
+	     match &config.server_host { None => "<automatic>", Some(x) => &x });
+    let sk_url = &format!("http://127.0.0.1:{}", config.listen_port);
     println!("speedketchup is at {ATTR_BOLD}{sk_url}{ATTR_RESET}");
 
-    let listener = match std::net::TcpListener::bind((listen_address, listen_port)) {
-	Err(e) => exit(&format!("could not bind {listen_address}:{listen_port}: {}", e), -1),
+    let listener = match std::net::TcpListener::bind((config.listen_address.as_str(), config.listen_port)) {
+	Err(e) => exit(&format!("could not bind {}:{}: {}", config.listen_address, config.listen_port, e), -1),
 	Ok(l) => l
     };
 #[cfg(unix)]
@@ -1240,8 +1284,12 @@ fn main() {
 	status: String::new(),
 	since: None,
 	expected_until: None,
-	detailed_status: String::new(),
-	store_filename: filename.to_string(),
+	gauge_latency: None,
+	gauge_download_speed: None,
+	gauge_download_latency: None,
+	gauge_upload_speed: None,
+	gauge_upload_latency: None,
+	config: config,
 	send_channels: HashMap::new(),
     }));
 
@@ -1252,9 +1300,13 @@ fn main() {
 	});
     }
 
-    let test_interval = std::time::Duration::from_secs(test_interval * 60);
+    let mut test_interval = std::time::Duration::from_secs(0);
     loop {
 	let now = std::time::Instant::now();
+	let mut server_host = None;
+	if let Ok(s) = state.lock() {
+	    server_host = s.config.server_host.clone();
+	}
 	let result = speedtest(&server_host, &state);
 	match &result {
 	    Err(err) => {
@@ -1266,8 +1318,11 @@ fn main() {
 		    r.latency_idle, r.latency_download, r.latency_upload, r.download, r.upload, r.client_public_ip, r.client_isp, r.server.host);
 	    }
 	};
+	let mut filename = String::new();
 	if let Ok(mut s) = state.lock() {
 	    s.status = "save result".to_string();
+	    test_interval = std::time::Duration::from_secs(s.config.test_interval * 60);
+	    filename = s.config.store_filename.clone();
 	}
 	save_result(&filename, &result);
 	match test_interval.checked_sub(now.elapsed()) {
