@@ -671,14 +671,15 @@ where
 	}).ok()?)
     }).collect();
 
-    for _ in 0..(duration.as_millis() / 100) {
-	std::thread::sleep(Duration::from_millis(100));
+    std::thread::sleep(Duration::from_millis(100));
+    while now.elapsed() < duration {
 	let bytes = progress.load(Ordering::Relaxed) as u64;
 	if let Ok(lat) = lat_progress.lock() {
 	    cb(now.elapsed().as_millis() as u32 * 100 / duration.as_millis() as u32,
 	       (bytes * 8 / now.elapsed().as_millis() as u64) as f32 / 1000.0,
 	       *lat);
 	}
+	std::thread::sleep(Duration::from_millis(100));
     }
 
     let mut bytes = vec!();
@@ -944,6 +945,7 @@ const ASSET_UPLOT_JS: &[u8] = include_bytes!("../asset/uplot.js");
 const ASSET_UPLOT_CSS: &[u8] = include_bytes!("../asset/uplot.css");
 const ASSET_STAIN_JPG: &[u8] = include_bytes!("../asset/stain.jpg");
 
+#[derive(Clone)]
 struct JSDur(Option<Duration>);
 impl std::fmt::Debug for JSDur {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -953,6 +955,7 @@ impl std::fmt::Debug for JSDur {
 	}
     }
 }
+#[derive(Clone)]
 struct JSf32(f32);
 impl std::fmt::Debug for JSf32 {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -964,15 +967,18 @@ impl std::fmt::Debug for JSf32 {
 }
 fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
     let filename = state.lock()?.config.store_filename.clone();
-    let data = &std::fs::read(&filename)?;
-    let mut it = std::str::from_utf8(data)?.lines();
-    it.next();
     let mut timestamps: Vec<u32> = vec!();
     let mut lat_idles: Vec<JSDur> = vec!();
     let mut lat_dls: Vec<JSDur> = vec!();
     let mut lat_uls: Vec<JSDur> = vec!();
     let mut downloads: Vec<JSf32> = vec!();
     let mut uploads: Vec<JSf32> = vec!();
+    let data = match std::fs::read(&filename) {
+	Ok(d) => d,
+	Err(_e) => Vec::<u8>::new(),
+    };
+    let mut it = std::str::from_utf8(&data)?.lines();
+    it.next();
     while let Some(line) = it.next() {
 	let x: Vec<_> = line.split(",").take(6).collect();
 	if x.len() < 4 {
@@ -1002,20 +1008,20 @@ fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorSt
 	    Err(_) => f32::NAN,
 	    Ok(t) => t,
 	};
-	if timestamps.len() == 0 {
-	    timestamps.push(time - 10);
-	    lat_idles.push(JSDur(lat_idle));
-	    lat_dls.push(JSDur(lat_dl));
-	    lat_uls.push(JSDur(lat_ul));
-	    downloads.push(JSf32(dl));
-	    uploads.push(JSf32(ul));
-	}
 	timestamps.push(time);
 	lat_idles.push(JSDur(lat_idle));
 	lat_dls.push(JSDur(lat_dl));
 	lat_uls.push(JSDur(lat_ul));
 	downloads.push(JSf32(dl));
 	uploads.push(JSf32(ul));
+    }
+    if timestamps.len() == 1 {
+	timestamps.push(timestamps[0].clone() + 1);
+	lat_idles.push(lat_idles[0].clone());
+	lat_dls.push(lat_dls[0].clone());
+	lat_uls.push(lat_uls[0].clone());
+	downloads.push(downloads[0].clone());
+	uploads.push(uploads[0].clone());
     }
     Ok(format!("let data = [{:?}, {:?}, {:?}, {:?}, {:?}, {:?}];", timestamps, lat_idles, lat_dls, lat_uls, downloads, uploads))
 }
@@ -1146,8 +1152,8 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 	stream.set_read_timeout(timeout)?;
 	match std::io::Read::read(&mut stream, &mut buf[bytes_read..]) {
 	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-	    Err(e) => {
-		pr!("read {e}");
+	    Err(_e) => {
+//		pr!("read {e}");
 		break
 	    }
 	    Ok(bytes) => {
@@ -1196,6 +1202,7 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 	    return Err("read too long req".into());
 	}
     }
+    pr!("close connection");
     Ok(())
 }
 

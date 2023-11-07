@@ -12,6 +12,8 @@
     <img src="stain.jpg" style="position: absolute; left: 0px; top: 30px; z-index: -1;">
     <div id="status">X</div>
     <div id="idle_time">X</div>
+    <div id="chart1"></div>
+    <div id="chart2"></div>
     <script type="text/javascript">
 function getSize() {
     let h = Math.max(window.innerHeight / 2 - 100, 200);
@@ -116,7 +118,7 @@ function updateIdleTime() {
     idleTimer = null;
     var el = document.getElementById('idle_time');
     var it = stateObj.idle_time;
-    if (it < 0) {
+    if (!it || it < 0) {
 	cleanupIdleTime();
 	return;
     }
@@ -195,7 +197,7 @@ function initSpeedKetchup() {
 	],
 	axes: axis,
     };
-    let uplot = new uPlot(opts, d, document.body);
+    let uplot = new uPlot(opts, d, document.getElementById("chart1"));
 
     let d2 = [data[0], data[2], data[3], data[1]];
     let opts2 = {
@@ -207,26 +209,26 @@ function initSpeedKetchup() {
 	    {},
 	    {
 		label: "Latency While Downloading",
-		value: (u, v) => (v == null ? d2[1][d2[1].length - 1] : v) + "ms",
+		value: (u, v) => (v == null ? d2[1][d2[1].length - 1] : v).toFixed(1) + "ms",
 		fill: "rgba(255, 0, 0, 0.3)",
 		...series,
 	    },
 	    {
 		label: "Latency While Uploading",
-		value: (u, v) => (v == null ? d2[2][d2[2].length - 1] : v) + "ms",
+		value: (u, v) => (v == null ? d2[2][d2[2].length - 1] : v).toFixed(1) + "ms",
 		fill: "rgba(0, 0, 255, 0.3)",
 		...series,
 	    },
 	    {
 		label: "Latency When Idle",
-		value: (u, v) => (v == null ? d2[3][d2[3].length - 1] : v) + "ms",
+		value: (u, v) => (v == null ? d2[3][d2[3].length - 1] : v).toFixed(1) + "ms",
 		fill: "rgba(50, 150, 50, 1)",
 		...series,
 	    },
 	],
 	axes: axis,
     };
-    let uplot2 = new uPlot(opts2, d2, document.body);
+    let uplot2 = new uPlot(opts2, d2, document.getElementById("chart2"));
 
     window.addEventListener("resize", e => {
 	uplot.setSize(getSize());
