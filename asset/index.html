@@ -7,10 +7,18 @@
     <link rel="stylesheet" type="text/css" href="uplot.css">
     <script type="text/javascript" src="uplot.js"></script>
     <script type="text/javascript" src="data.js"></script>
+    <style>
+      html, body {
+	  max-width: 100%;
+	  overflow-x: hidden;
+      }
+    </style>
   </head>
   <body style="margin: 0; padding: 0; font-family: verdana; font-size: 11px;">
-    <div id="dashboard" style="background-image: linear-gradient(#e3d99a, #fff);">
-      <img src="dashboard.svg" height="150px">
+    <div id="dashboard" style="background-image: linear-gradient(#e3d99a, #fff);" width="100%">
+      <img src="dashboard.svg" height="150px" style="    margin-left: 50%;
+    transform: translateX(-50%);
+">
     </div>
     <div id="chart1"></div>
     <div id="chart2"></div>
@@ -18,7 +26,7 @@
     <div id="idle_time">X</div>
     <script type="text/javascript">
 function getSize() {
-    let h = Math.max(window.innerHeight / 2 - 100, 200);
+    let h = Math.max(window.innerHeight / 2 - 150, 200);
     return {
 	width: window.innerWidth,
 	height: h,
