@@ -941,7 +941,6 @@ fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
 
 const ASSET_INDEX_HTML: &[u8] = include_bytes!("../asset/index.html");
 const ASSET_FAVICON_SVG: &[u8] = include_bytes!("../asset/favicon.svg");
-const ASSET_DASHBOARD_SVG: &[u8] = include_bytes!("../asset/dashboard.svg");
 const ASSET_UPLOT_JS: &[u8] = include_bytes!("../asset/uplot.js");
 const ASSET_UPLOT_CSS: &[u8] = include_bytes!("../asset/uplot.css");
 const ASSET_STAIN_JPG: &[u8] = include_bytes!("../asset/stain.jpg");
@@ -1070,7 +1069,6 @@ fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStre
     let (data, content_type) = match url {
 	"/" => (ASSET_INDEX_HTML, "text/html; charset=utf-8"),
 	"/favicon.svg" => (ASSET_FAVICON_SVG, "image/svg+xml"),
-	"/dashboard.svg" => (ASSET_DASHBOARD_SVG, "image/svg+xml"),
 	"/uplot.js" => (ASSET_UPLOT_JS, "text/javascript"),
 	"/uplot.css" => (ASSET_UPLOT_CSS, "text/css"),
 	"/stain.jpg" => (ASSET_STAIN_JPG, "image/jpg"),
