@@ -42,7 +42,7 @@
 	  }
 	</style>
 	<defs>
-	  <filter id="f3" x="0" y="0" width="200%" height="200%">
+	  <filter id="f3">
 	    <feOffset result="offOut" in="SourceAlpha" dx="10" dy="10" />
 	    <feGaussianBlur result="blurOut" in="offOut" stdDeviation="10" />
 	    <feBlend in="SourceGraphic" in2="blurOut" mode="normal" />
@@ -82,20 +82,33 @@
 		 z"
 	      fill="#fff" filter="url(#f3)"/>
 
-	<path id="download_progress_band" d="M 50 50
+	<clipPath id="clip_dpb">
+	  <path id="download_progress_band" d=""/>
+	</clipPath>
+	<clipPath id="clip_upb">
+	  <path id="upload_progress_band" d=""/>
+	</clipPath>
+	<clipPath id="clip_dsb">
+	  <path id="download_speed_band" d=""/>
+	</clipPath>
+	<clipPath id="clip_usb">
+	  <path id="upload_speed_band" d=""/>
+	</clipPath>
+
+	<path d="M 50 50
 		 m -28 28
 		 a 40 40 1 1 1 56 0
 		 l 2 2
 		 a 43 43 1 1 0 -60 0
 		 z"
-	      fill="#ccc"/>
+	      fill="#ccc" clip-path="url(#clip_dpb)"/>
 	<path id="upload_progress_band" d="M 150 50
 		 m -28 28
 		 a 40 40 1 1 1 56 0
 		 l 2 2
 		 a 43 43 1 1 0 -60 0
 		 z"
-	      fill="#ccc"/>
+	      fill="#ccc" clip-path="url(#clip_upb)"/>
 
 	<use x="0" y="0" href="#spd"/>
 	<use x="100" y="0" href="#spd"/>
@@ -105,34 +118,34 @@
 		     l -6 -6
 		     a 32 32 1 1 0 -44 0
 		     z"
-		  fill="#fdd"/>
+		  fill="#fdd" clip-path="url(#clip_dsb)"/>
 	<path id="upload_speed_band" d="M 150 50
 		     m -28 28
 		     a 40 40 1 1 1 56 0
 		     l -6 -6
 		     a 32 32 1 1 0 -44 0
 		     z"
-		  fill="#ddf"/>
+		  fill="#ddf" clip-path="url(#clip_usb)"/>
 
-	<use id="download_needle" x="0" y="0" href="#needle" fill="#d00" transform="rotate(-135, 50, 50)"/>
-	<use id="upload_needle" x="100" y="0" href="#needle" fill="#00d" transform="rotate(-135, 150, 50)"/>
+	<use id="download_needle" x="0" y="0" href="#needle" fill="#d00" transform="rotate(-135, 50, 50)" style="visibility: hidden;"/>
+	<use id="upload_needle" x="100" y="0" href="#needle" fill="#00d" transform="rotate(-135, 150, 50)" style="visibility: hidden;"/>
 
 	<text text-anchor="middle" x="50" y="75" class="bt" fill="#d00"><title>Download</title>▼</text>
-	<text id="download_mbps" text-anchor="middle" x="50" y="90" class="bt"><title>Download Speed Mbps</title></text>
+	<text text-anchor="middle" x="50" y="90" class="bt"><title>Download Speed Mbps</title><tspan id="download_mbps"/></text>
 	<text text-anchor="middle" x="75" y="90" class="st">Mbps</text>
-	<text id="download_latency" text-anchor="middle" x="50" y="98" class="st"><title>Latency While Downloading</title></text>
+	<text text-anchor="middle" x="50" y="98" class="st"><title>Latency While Downloading</title><tspan id="download_latency"/></text>
 
 	<text text-anchor="middle" x="150" y="75" class="bt" fill="#00d"><title>Upload</title>▲</text>
-	<text id="upload_mbps" text-anchor="middle" x="150" y="90" class="bt"><title>Upload Speed Mbps</title></text>
+	<text text-anchor="middle" x="150" y="90" class="bt"><title>Upload Speed Mbps</title><tspan id="upload_mbps"/></text>
 	<text text-anchor="middle" x="175" y="90" class="st">Mbps</text>
-	<text id="upload_latency" text-anchor="middle" x="150" y="98" class="st"><title>Latency While Uploading</title></text>
+	<text text-anchor="middle" x="150" y="98" class="st"><title>Latency While Uploading</title><tspan id="upload_latency"/></text>
 
-	<g id="play_button" class="button" style="cursor: pointer;" >
+	<g id="play_button" class="button" style="cursor: pointer; visibility: hidden;" onclick="onClickPlay()">
 	  <title>Start Test Now</title>
 	  <circle cx="100" cy="18" r="12" fill="#0c0" />
 	  <path d="M 97 13 l 10 5 l -10 5 z" fill="#fff"/>
 	</g>
-	<g id="stop_button" class="button" style="cursor: pointer; visibility: hidden;" >
+	<g id="stop_button" class="button" style="cursor: pointer; visibility: hidden;" onclick="onClickStop()">
 	  <title>Stop Test</title>
 	  <circle cx="100" cy="18" r="12" fill="#0c0" />
 	  <path d="M 96 14 h8 v8 h-8 z" fill="#fff"/>
@@ -142,13 +155,12 @@
 	  <circle cx="100" cy="18" r="12" fill="#ddd" />
 	  <circle cx="100" cy="18" r="3" fill="#fff" />
 	</g>
-	<text id="time_till_next" text-anchor="middle" x="100" y="75" class="st"><title>Time Till Next Test</title></text>
-	<text id="idle_latency" text-anchor="middle" x="100" y="98" class="st"><title>Latency While Idle</title></text>
+	<text text-anchor="middle" x="100" y="75" class="st"><title>Time Till Next Test</title><tspan id="time_till_next"/></text>
+	<text text-anchor="middle" x="100" y="98" class="st"><title>Latency When Idle</title><tspan id="idle_latency"/></text>
       </svg>
     </div>
     <div id="chart1"></div>
     <div id="chart2"></div>
-    <div id="status">X</div>
     <script type="text/javascript">
 function getSize() {
     let h = Math.max(window.innerHeight / 2 - 150, 200);
@@ -164,6 +176,12 @@ function formatNumber(num, width) {
 	ret = "0" + ret;
     }
     return ret;
+}
+function format3(num) {
+    if (num < 1) return "" + num.toFixed(3);
+    if (num < 10) return "" + num.toFixed(2);
+    if (num < 100) return "" + num.toFixed(1);
+    return "" + num;
 }
 
 function debug(str) {
@@ -202,25 +220,21 @@ function speed_to_gauge_degrees(mbps) {
 function deg_to_rad(deg) {
     return deg * Math.PI / 180;
 }
-function degrees_to_band_path(deg, ri, ro) {
+function degrees_to_clip_path(deg) {
+    var ri = 50;
     var pi = Math.sqrt(ri * ri / 2).toFixed(2);
-    var po = Math.sqrt(ro * ro / 2).toFixed(2);
     var rad = deg_to_rad(deg);
     var cos = Math.cos(rad);
     var sin = Math.sin(rad);
-
-    var pti = [-(cos * pi + sin * pi).toFixed(4), (cos * pi - sin * pi).toFixed(4)];
-    var pto = [-(cos * po + sin * po).toFixed(4), (cos * po - sin * po).toFixed(4)];
+    var pti = [-(cos * pi + sin * pi).toFixed(2), (cos * pi - sin * pi).toFixed(2)];
 
     var s = 0;
     if (deg >= 180) {
 	s = 1;
     }
 
-    ret = " m -" + pi + " " + pi;
+    ret = " l -" + pi + " " + pi;
     ret += " a " + ri + " " + ri + " 1 " + s + " 1 " + (pti[0] - -pi) + " " + (pti[1] - pi);
-    ret += " l " + (pto[0] - pti[0]) + " " + (pto[1] - pti[1]);
-    ret += " a " + ro + " " + ro + " 1 " + s + " 0 " + (-po - pto[0]) + " " + (po - pto[1]);
     ret += " z";
     return ret;
 }
@@ -245,7 +259,6 @@ function request(obj, cb) {
 }
 
 var stateStr = "";
-var stateObj = {};
 function el(id) {
     return document.getElementById(id);
 }
@@ -266,43 +279,47 @@ function dashboard_set() {
 	el("stop_button").style.visibility = "visible";
     }
     if (stateObj.latency) {
-	el("idle_latency").textContent = stateObj.latency + "ms";
+	el("idle_latency").textContent = format3(stateObj.latency) + "ms";
     }
     if (stateObj.download_mbps) {
-	el("download_mbps").textContent = stateObj.download_mbps;
+	el("download_mbps").textContent = format3(stateObj.download_mbps);
 	var deg = speed_to_gauge_degrees(stateObj.download_mbps);
 	el("download_needle").transform.baseVal[0].setRotate(-135 + deg, 50, 50);
-	el("download_speed_band").setAttribute("d", "M50 50" + degrees_to_band_path(deg, 32, 40));
+	el("download_needle").style.visibility = "visible";
+	el("download_speed_band").setAttribute("d", "M50 50" + degrees_to_clip_path(deg));
+//	el("download_speed_band").setAttribute("clip-path", "view-box path('M50 50" + degrees_to_clip_path(deg) + "')");
     }
     if (stateObj.download_progress) {
 	var deg = stateObj.download_progress * 270 / 100;
-	el("download_progress_band").setAttribute("d", "M50 50" + degrees_to_band_path(deg, 35, 43));
+	el("download_progress_band").setAttribute("d", "M50 50" + degrees_to_clip_path(deg));
+//	el("download_progress_band").setAttribute("clip-path", "view-box path('M50 50" + degrees_to_clip_path(deg) + "')");
     }
     if (stateObj.download_latency) {
-	el("download_latency").textContent = stateObj.download_latency + "ms";
+	el("download_latency").textContent = format3(stateObj.download_latency) + "ms";
     }
     if (stateObj.upload_mbps) {
-	el("upload_mbps").textContent = stateObj.upload_mbps;
+	el("upload_mbps").textContent = format3(stateObj.upload_mbps);
 	var deg = speed_to_gauge_degrees(stateObj.upload_mbps);
 	el("upload_needle").transform.baseVal[0].setRotate(-135 + deg, 150, 50);
-	el("upload_speed_band").setAttribute("d", "M150 50" + degrees_to_band_path(deg, 40, 32));
+	el("upload_needle").style.visibility = "visible";
+	el("upload_speed_band").setAttribute("d", "M150 50" + degrees_to_clip_path(deg));
+//	el("upload_speed_band").setAttribute("clip-path", "view-box path('M150 50" + degrees_to_clip_path(deg) + "')");
     }
     if (stateObj.upload_progress) {
 	var deg = stateObj.upload_progress * 270 / 100;
-	el("upload_progress_band").setAttribute("d", "M150 50" + degrees_to_band_path(deg, 35, 43));
+	el("upload_progress_band").setAttribute("d", "M150 50" + degrees_to_clip_path(deg));
+//	el("upload_progress_band").setAttribute("clip-path", "view-box path('M150 50" + degrees_to_clip_path(deg) + "')");
     }
     if (stateObj.upload_latency) {
-	el("upload_latency").textContent = stateObj.upload_latency + "ms";
+	el("upload_latency").textContent = format3(stateObj.upload_latency) + "ms";
     }
 }
 
 function onRequest(r) {
     debug("on request " + r);
-    var el = document.getElementById('status');
     if (r == null) {
 	stateStr = "connection lost";
 	stateObj = {};
-	el.innerText = "Status: 🔴 connection lost";
 	dashboard_set();
 	setTimeout(function () { request(null, onRequest); }, 1000);
 	return;
@@ -325,7 +342,6 @@ function onRequest(r) {
     else {
 	cleanupIdleTime();
     }
-    el.innerText = "Status: 🟢 " + r;
     dashboard_set();
     setTimeout(function () { request(stateStr, onRequest); }, 100);
 };
@@ -355,7 +371,17 @@ function cleanupIdleTime() {
     }
 }
 
+function onClickPlay() {
+    debug("play");
+}
+
+function onClickStop() {
+    debug("stop");
+}
+
 function initSpeedKetchup() {
+    dashboard_set();
+
     let mooSync = uPlot.sync("moo");
     const matchSyncKeys = (own, ext) => own == ext;
 

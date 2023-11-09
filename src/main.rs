@@ -1023,7 +1023,7 @@ fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorSt
 	downloads.push(downloads[0].clone());
 	uploads.push(uploads[0].clone());
     }
-    Ok(format!("let data = [{:?}, {:?}, {:?}, {:?}, {:?}, {:?}];", timestamps, lat_idles, lat_dls, lat_uls, downloads, uploads))
+    Ok(format!("let data = [{:?}, {:?}, {:?}, {:?}, {:?}, {:?}]; let stateObj = {};", timestamps, lat_idles, lat_dls, lat_uls, downloads, uploads, server_get_status(state)?))
 }
 
 fn server_get_status(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
@@ -1402,6 +1402,8 @@ fn main() {
 	    state.status = "save result".to_string();
 	    test_interval = Duration::from_secs(state.config.test_interval * 60);
 	    filename = state.config.store_filename.clone();
+	    state.gauge_download_progress = None;
+	    state.gauge_upload_progress = None;
 	}
 	save_result(&filename, &result);
 	if let Some(dur) = test_interval.checked_sub(now.elapsed()) {
