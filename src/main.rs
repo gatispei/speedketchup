@@ -165,7 +165,10 @@ struct SpeedTestState {
 
     config: SpeedTestConfig,
 
-    send_channels: HashMap<std::thread::ThreadId, mpsc::Sender<()>>,
+    to_conn_senders: HashMap<std::thread::ThreadId, mpsc::Sender<()>>,
+    to_main_sender: mpsc::Sender<()>,
+
+    test_requested: Option<bool>,
 }
 
 #[allow(dead_code)]
@@ -707,7 +710,7 @@ where
 fn set_status(state: &Arc<Mutex<SpeedTestState>>, new_status: &str) ->Result<(), ErrorString> {
     let mut state = state.lock()?;
     state.status = new_status.to_string();
-    for (_threadid, tx) in state.send_channels.iter() {
+    for (_threadid, tx) in state.to_conn_senders.iter() {
 	let _ = tx.send(());
     }
     Ok(())
@@ -861,7 +864,7 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 	    state.gauge_download_progress = Some(progress);
 	    state.gauge_download_mbps = Some(speed);
 	    state.gauge_download_latency = latency;
-	    for (_threadid, tx) in state.send_channels.iter() {
+	    for (_threadid, tx) in state.to_conn_senders.iter() {
 		let _ = tx.send(());
 	    }
 	}
@@ -877,7 +880,7 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 	    state.gauge_upload_progress = Some(progress);
 	    state.gauge_upload_mbps = Some(speed);
 	    state.gauge_upload_latency = latency;
-	    for (_threadid, tx) in state.send_channels.iter() {
+	    for (_threadid, tx) in state.to_conn_senders.iter() {
 		let _ = tx.send(());
 	    }
 	}
@@ -1077,7 +1080,6 @@ fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStre
 	    (_data.as_bytes(), "text/javascript")
 	},
 	"/status" => {
-//	    let mut current_status = state.lock()?.status.clone();
 	    let mut current_status = server_get_status(state)?;
 	    if content.len() > 0 && current_status == content {
 		while current_status == content {
@@ -1091,6 +1093,18 @@ fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStre
 	    }
 	    _data = current_status;
 	    (_data.as_bytes(), "text/plain")
+	},
+	"/start" => {
+	    pr!("start");
+	    let mut state = state.lock()?;
+	    state.test_requested = Some(true);
+	    let _ = state.to_main_sender.send(());
+	    ("".as_bytes(), "text/plain")
+	},
+	"/stop" => {
+	    pr!("stop");
+	    state.lock()?.test_requested = Some(false);
+	    ("".as_bytes(), "text/plain")
 	},
 	_ => ("404".as_bytes(), "text/html"),
     };
@@ -1237,13 +1251,13 @@ fn server(listener: std::net::TcpListener, state: Arc<Mutex<SpeedTestState>>) {
 		if let Err(e) = std::thread::Builder::new().name(format!("server-conn-{peer_addr}")).spawn(move || {
 		    let (tx, rx) = mpsc::channel();
 		    if let Ok(mut state) = state.lock() {
-			state.send_channels.insert(std::thread::current().id(), tx);
+			state.to_conn_senders.insert(std::thread::current().id(), tx);
 		    }
 		    if let Err(e) = server_connection(s, &state, rx) {
 			pr!("error: {e}");
 		    }
 		    if let Ok(mut state) = state.lock() {
-			state.send_channels.remove(&std::thread::current().id());
+			state.to_conn_senders.remove(&std::thread::current().id());
 		    }
 		}) {
 		    pr!("thread failed {e}");
@@ -1357,6 +1371,7 @@ fn main() {
 	Ok(_) => ()
     };
 
+    let (tx, rx) = mpsc::channel();
     let state = Arc::new(Mutex::new(SpeedTestState {
 	status: String::new(),
 	idle_until: None,
@@ -1368,7 +1383,9 @@ fn main() {
 	gauge_upload_mbps: None,
 	gauge_upload_latency: None,
 	config: config,
-	send_channels: HashMap::new(),
+	to_conn_senders: HashMap::new(),
+	to_main_sender: tx,
+	test_requested: None,
     }));
 
     {
@@ -1385,6 +1402,7 @@ fn main() {
 	if let Ok(mut state) = state.lock() {
 	    server_host = state.config.server_host.clone();
 	    state.idle_until = None;
+	    state.test_requested = None;
 	}
 	let result = speedtest(&server_host, &state);
 	match &result {
@@ -1404,15 +1422,21 @@ fn main() {
 	    filename = state.config.store_filename.clone();
 	    state.gauge_download_progress = None;
 	    state.gauge_upload_progress = None;
+            state.idle_until = Some(Instant::now() + test_interval.checked_sub(now.elapsed()).unwrap_or_default());
 	}
 	save_result(&filename, &result);
-	if let Some(dur) = test_interval.checked_sub(now.elapsed()) {
+        let _ = set_status(&state, "idle");
+
+	// sleep for rest of test_interval unless test is manually requested
+	while let Some(dur) = test_interval.checked_sub(now.elapsed()) {
 	    pr!("sleep for {:?}", dur);
-	    let _ = set_status(&state, "idle");
-	    if let Ok(mut state) = state.lock() {
-		state.idle_until = Some(Instant::now() + dur);
+	    if rx.recv_timeout(dur).is_ok() {
+		if let Ok(state) = state.lock() {
+		    if state.test_requested == Some(true) {
+			break;
+		    }
+		}
 	    }
-	    std::thread::sleep(dur);
 	}
     }
 }

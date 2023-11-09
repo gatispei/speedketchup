@@ -15,7 +15,7 @@
     </style>
   </head>
   <body style="margin: 0; padding: 0; font-family: verdana; font-size: 11px;">
-    <div id="dashboard" style="background-image: linear-gradient(#e3d99a, #fff);" width="100%">
+    <div id="dashboard" style="background-image: linear-gradient(#fff, #fff);" width="100%">
       <svg viewBox="-100 0 400 100" xmlns="http://www.w3.org/2000/svg" height="150px" style="margin-left: 50%; transform: translateX(-50%);">
 	<style>
 	  .st {
@@ -140,7 +140,7 @@
 	<text text-anchor="middle" x="175" y="90" class="st">Mbps</text>
 	<text text-anchor="middle" x="150" y="98" class="st"><title>Latency While Uploading</title><tspan id="upload_latency"/></text>
 
-	<g id="play_button" class="button" style="cursor: pointer; visibility: hidden;" onclick="onClickPlay()">
+	<g id="start_button" class="button" style="cursor: pointer; visibility: hidden;" onclick="onClickStart()">
 	  <title>Start Test Now</title>
 	  <circle cx="100" cy="18" r="12" fill="#0c0" />
 	  <path d="M 97 13 l 10 5 l -10 5 z" fill="#fff"/>
@@ -264,18 +264,18 @@ function el(id) {
 }
 function dashboard_set() {
     if (!stateObj || !stateObj.state) {
-	el("play_button").style.visibility = "hidden";
+	el("start_button").style.visibility = "hidden";
 	el("stop_button").style.visibility = "hidden";
 	el("disconnected_button").style.visibility = "visible";
 	return;
     }
     el("disconnected_button").style.visibility = "hidden";
     if (stateObj.state == "idle") {
-	el("play_button").style.visibility = "visible";
+	el("start_button").style.visibility = "visible";
 	el("stop_button").style.visibility = "hidden";
     }
     else {
-	el("play_button").style.visibility = "hidden";
+	el("start_button").style.visibility = "hidden";
 	el("stop_button").style.visibility = "visible";
     }
     if (stateObj.latency) {
@@ -371,12 +371,20 @@ function cleanupIdleTime() {
     }
 }
 
-function onClickPlay() {
-    debug("play");
+function onClickStart() {
+    debug("start");
+    var req = new XMLHttpRequest();
+    req.timeout = 10 * 1000;
+    req.open("POST", "/start", true);
+    req.send();
 }
 
 function onClickStop() {
     debug("stop");
+    var req = new XMLHttpRequest();
+    req.timeout = 10 * 1000;
+    req.open("POST", "/stop", true);
+    req.send();
 }
 
 function initSpeedKetchup() {
