@@ -16,7 +16,7 @@
   </head>
   <body style="margin: 0; padding: 0; font-family: verdana; font-size: 11px;">
     <div id="dashboard" style="background-image: linear-gradient(#fff, #fff);" width="100%">
-      <svg viewBox="-100 0 400 100" xmlns="http://www.w3.org/2000/svg" height="150px" style="margin-left: 50%; transform: translateX(-50%);">
+      <svg viewBox="-105 0 410 100" xmlns="http://www.w3.org/2000/svg" height="150px" style="margin-left: 50%; transform: translateX(-50%);">
 	<style>
 	  .st {
 	      font-family: verdana;
@@ -28,6 +28,12 @@
 	      font-family: verdana;
 	      font-size: 15px;
 	      cursor: default;
+	      user-select: none;
+	  }
+	  .gt {
+	      font-family: verdana;
+	      font-size: 15px;
+	      cursor: pointer;
 	      user-select: none;
 	  }
 	  .button {
@@ -62,7 +68,7 @@
 	    <text text-anchor="middle" x="72" y="42" class="st">100</text>
 	    <text text-anchor="middle" x="65" y="72" class="st">1000</text>
 	  </g>
-	  <path id="needle" d="M 50 50
+	  <path id="needle" d="M 45 50
 			       m -2 0
 			       a 2 2 1 1 0 4 0
 			       l -2 -38
@@ -70,14 +76,13 @@
 		/>
 	</defs>
 
-	<path d="M -50 101
+	<path d="M -55 101
 		 v -1
-		 A 50 50 0 0 0 0 50
-		 V 50
-		 A 50 50 0 0 1 50 0
-		 H 150
-		 A 50 50 0 0 1 200 50
-		 A 50 50 0 0 0 250 100
+		 a 50 50 0 0 0 50 -50
+		 a 50 50 0 0 1 50 -50
+		 h 110
+		 a 50 50 0 0 1 50 50
+		 a 50 50 0 0 0 50 50
 		 v 1
 		 z"
 	      fill="#fff" filter="url(#f3)"/>
@@ -95,14 +100,14 @@
 	  <path id="upload_speed_band" d=""/>
 	</clipPath>
 
-	<path d="M 50 50
+	<path d="M 45 50
 		 m -28 28
 		 a 40 40 1 1 1 56 0
 		 l 2 2
 		 a 43 43 1 1 0 -60 0
 		 z"
 	      fill="#ccc" clip-path="url(#clip_dpb)"/>
-	<path id="upload_progress_band" d="M 150 50
+	<path id="upload_progress_band" d="M 155 50
 		 m -28 28
 		 a 40 40 1 1 1 56 0
 		 l 2 2
@@ -110,16 +115,16 @@
 		 z"
 	      fill="#ccc" clip-path="url(#clip_upb)"/>
 
-	<use x="0" y="0" href="#spd"/>
-	<use x="100" y="0" href="#spd"/>
-	<path id="download_speed_band" d="M 50 50
+	<use x="-5" y="0" href="#spd"/>
+	<use x="105" y="0" href="#spd"/>
+	<path id="download_speed_band" d="M 45 50
 		     m -28 28
 		     a 40 40 1 1 1 56 0
 		     l -6 -6
 		     a 32 32 1 1 0 -44 0
 		     z"
 		  fill="#fdd" clip-path="url(#clip_dsb)"/>
-	<path id="upload_speed_band" d="M 150 50
+	<path id="upload_speed_band" d="M 155 50
 		     m -28 28
 		     a 40 40 1 1 1 56 0
 		     l -6 -6
@@ -127,28 +132,28 @@
 		     z"
 		  fill="#ddf" clip-path="url(#clip_usb)"/>
 
-	<use id="download_needle" x="0" y="0" href="#needle" fill="#d00" transform="rotate(-135, 50, 50)" style="visibility: hidden;"/>
-	<use id="upload_needle" x="100" y="0" href="#needle" fill="#00d" transform="rotate(-135, 150, 50)" style="visibility: hidden;"/>
+	<use id="download_needle" x="0" y="0" href="#needle" fill="#d00" transform="rotate(-135, 45, 50)" style="visibility: hidden;"/>
+	<use id="upload_needle" x="110" y="0" href="#needle" fill="#00d" transform="rotate(-135, 155, 50)" style="visibility: hidden;"/>
 
-	<text text-anchor="middle" x="50" y="75" class="bt" fill="#d00"><title>Download</title>▼</text>
-	<text text-anchor="middle" x="50" y="90" class="bt"><title>Download Speed Mbps</title><tspan id="download_mbps"/></text>
-	<text text-anchor="middle" x="75" y="90" class="st">Mbps</text>
-	<text text-anchor="middle" x="50" y="98" class="st"><title>Latency While Downloading</title><tspan id="download_latency"/></text>
+	<text text-anchor="middle" x="45" y="75" class="bt" fill="#d00"><title>Download</title>▼</text>
+	<text text-anchor="middle" x="45" y="90" class="bt"><title>Download Speed Mbps</title><tspan id="download_mbps"></tspan></text>
+	<text text-anchor="middle" x="70" y="90" class="st">Mbps</text>
+	<text text-anchor="middle" x="45" y="98" class="st"><title>Latency While Downloading</title><tspan id="download_latency"></tspan></text>
 
-	<text text-anchor="middle" x="150" y="75" class="bt" fill="#00d"><title>Upload</title>▲</text>
-	<text text-anchor="middle" x="150" y="90" class="bt"><title>Upload Speed Mbps</title><tspan id="upload_mbps"/></text>
-	<text text-anchor="middle" x="175" y="90" class="st">Mbps</text>
-	<text text-anchor="middle" x="150" y="98" class="st"><title>Latency While Uploading</title><tspan id="upload_latency"/></text>
+	<text text-anchor="middle" x="155" y="75" class="bt" fill="#00d"><title>Upload</title>▲</text>
+	<text text-anchor="middle" x="155" y="90" class="bt"><title>Upload Speed Mbps</title><tspan id="upload_mbps"></tspan></text>
+	<text text-anchor="middle" x="180" y="90" class="st">Mbps</text>
+	<text text-anchor="middle" x="155" y="98" class="st"><title>Latency While Uploading</title><tspan id="upload_latency"></tspan></text>
 
 	<g id="start_button" class="button" style="cursor: pointer; visibility: hidden;" onclick="onClickStart()">
 	  <title>Start Test Now</title>
-	  <circle cx="100" cy="18" r="12" fill="#0c0" />
-	  <path d="M 97 13 l 10 5 l -10 5 z" fill="#fff"/>
+	  <circle cx="100" cy="21" r="14" fill="#0c0" />
+	  <path d="M 97 16 l 10 5 l -10 5 z" fill="#fff"/>
 	</g>
 	<g id="stop_button" style="visibility: hidden;">
 	  <title>Test Is Running</title>
-	  <circle cx="100" cy="18" r="12" fill="#ddd" />
-	  <path d="M 97 13 l 10 5 l -10 5 z" fill="#fff"/>
+	  <circle cx="100" cy="21" r="14" fill="#ddd" />
+	  <path d="M 97 16 l 10 5 l -10 5 z" fill="#fff"/>
 <!-- 	<g id="stop_button" class="button" style="visibility: hidden;" onclick="onClickStop()"> -->
 <!-- 	  <title>Stop Test</title> -->
 <!-- 	  <circle cx="100" cy="18" r="12" fill="#0c0" /> -->
@@ -156,11 +161,21 @@
 	</g>
 	<g id="disconnected_button" style="visibility: hidden;">
 	  <title>Connection Lost</title>
-	  <circle cx="100" cy="18" r="12" fill="#ddd" />
-	  <circle cx="100" cy="18" r="3" fill="#fff" />
+	  <circle cx="100" cy="21" r="14" fill="#ddd" />
+	  <circle cx="100" cy="21" r="4" fill="#fff" />
 	</g>
-	<text text-anchor="middle" x="100" y="75" class="st"><title>Time Till Next Test</title><tspan id="time_till_next"/></text>
-	<text text-anchor="middle" x="100" y="98" class="st"><title>Latency When Idle</title><tspan id="idle_latency"/></text>
+	<g id="settings_button" class="button" style="cursor:pointer; visibility: hidden;" onclick="onClickSettings()">
+	  <title>Settings Menu</title>
+	  <circle cx="100" cy="79" r="14" fill="#cc0" />
+	  <text text-anchor="middle" x="100" y="84.5" class="gt">⚙️</text>
+	</g>
+	<g id="disconnected2_button" style="visibility: hidden;">
+	  <title>Connection Lost</title>
+	  <circle cx="100" cy="79" r="14" fill="#ddd" />
+	  <circle cx="100" cy="79" r="4" fill="#fff" />
+	</g>
+	<text text-anchor="middle" x="100" y="52" class="st"><title>Time Till Next Test</title><tspan id="time_till_next"></tspan></text>
+	<text text-anchor="middle" x="0" y="98" class="st"><title>Latency When Idle</title><tspan id="idle_latency"></tspan></text>
       </svg>
     </div>
     <div id="chart1"></div>
@@ -271,9 +286,13 @@ function dashboard_set() {
 	el("start_button").style.visibility = "hidden";
 	el("stop_button").style.visibility = "hidden";
 	el("disconnected_button").style.visibility = "visible";
+	el("settings_button").style.visibility = "hidden";
+	el("disconnected2_button").style.visibility = "visible";
 	return;
     }
     el("disconnected_button").style.visibility = "hidden";
+    el("disconnected2_button").style.visibility = "hidden";
+    el("settings_button").style.visibility = "visible";
     if (stateObj.state == "idle") {
 	el("start_button").style.visibility = "visible";
 	el("stop_button").style.visibility = "hidden";
@@ -288,15 +307,13 @@ function dashboard_set() {
     if (stateObj.download_mbps) {
 	el("download_mbps").textContent = format3(stateObj.download_mbps);
 	var deg = speed_to_gauge_degrees(stateObj.download_mbps);
-	el("download_needle").transform.baseVal[0].setRotate(-135 + deg, 50, 50);
+	el("download_needle").transform.baseVal[0].setRotate(-135 + deg, 45, 50);
 	el("download_needle").style.visibility = "visible";
-	el("download_speed_band").setAttribute("d", "M50 50" + degrees_to_clip_path(deg));
-//	el("download_speed_band").setAttribute("clip-path", "view-box path('M50 50" + degrees_to_clip_path(deg) + "')");
+	el("download_speed_band").setAttribute("d", "M45 50" + degrees_to_clip_path(deg));
     }
     if (stateObj.download_progress) {
 	var deg = stateObj.download_progress * 270 / 100;
-	el("download_progress_band").setAttribute("d", "M50 50" + degrees_to_clip_path(deg));
-//	el("download_progress_band").setAttribute("clip-path", "view-box path('M50 50" + degrees_to_clip_path(deg) + "')");
+	el("download_progress_band").setAttribute("d", "M45 50" + degrees_to_clip_path(deg));
     }
     if (stateObj.download_latency) {
 	el("download_latency").textContent = format3(stateObj.download_latency) + "ms";
@@ -304,15 +321,13 @@ function dashboard_set() {
     if (stateObj.upload_mbps) {
 	el("upload_mbps").textContent = format3(stateObj.upload_mbps);
 	var deg = speed_to_gauge_degrees(stateObj.upload_mbps);
-	el("upload_needle").transform.baseVal[0].setRotate(-135 + deg, 150, 50);
+	el("upload_needle").transform.baseVal[0].setRotate(-135 + deg, 155, 50);
 	el("upload_needle").style.visibility = "visible";
-	el("upload_speed_band").setAttribute("d", "M150 50" + degrees_to_clip_path(deg));
-//	el("upload_speed_band").setAttribute("clip-path", "view-box path('M150 50" + degrees_to_clip_path(deg) + "')");
+	el("upload_speed_band").setAttribute("d", "M155 50" + degrees_to_clip_path(deg));
     }
     if (stateObj.upload_progress) {
 	var deg = stateObj.upload_progress * 270 / 100;
-	el("upload_progress_band").setAttribute("d", "M150 50" + degrees_to_clip_path(deg));
-//	el("upload_progress_band").setAttribute("clip-path", "view-box path('M150 50" + degrees_to_clip_path(deg) + "')");
+	el("upload_progress_band").setAttribute("d", "M155 50" + degrees_to_clip_path(deg));
     }
     if (stateObj.upload_latency) {
 	el("upload_latency").textContent = format3(stateObj.upload_latency) + "ms";
@@ -392,6 +407,10 @@ function onClickStop() {
     req.send();
 }
 */
+
+function onClickSettings() {
+    debug("settings");
+}
 
 function initSpeedKetchup() {
     dashboard_set();
