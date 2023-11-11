@@ -145,10 +145,14 @@
 	  <circle cx="100" cy="18" r="12" fill="#0c0" />
 	  <path d="M 97 13 l 10 5 l -10 5 z" fill="#fff"/>
 	</g>
-	<g id="stop_button" class="button" style="cursor: pointer; visibility: hidden;" onclick="onClickStop()">
-	  <title>Stop Test</title>
-	  <circle cx="100" cy="18" r="12" fill="#0c0" />
-	  <path d="M 96 14 h8 v8 h-8 z" fill="#fff"/>
+	<g id="stop_button" style="visibility: hidden;">
+	  <title>Test Is Running</title>
+	  <circle cx="100" cy="18" r="12" fill="#ddd" />
+	  <path d="M 97 13 l 10 5 l -10 5 z" fill="#fff"/>
+<!-- 	<g id="stop_button" class="button" style="visibility: hidden;" onclick="onClickStop()"> -->
+<!-- 	  <title>Stop Test</title> -->
+<!-- 	  <circle cx="100" cy="18" r="12" fill="#0c0" /> -->
+<!-- 	  <path d="M 96 14 h8 v8 h-8 z" fill="#fff"/> -->
 	</g>
 	<g id="disconnected_button" style="visibility: hidden;">
 	  <title>Connection Lost</title>
@@ -379,6 +383,7 @@ function onClickStart() {
     req.send();
 }
 
+/*
 function onClickStop() {
     debug("stop");
     var req = new XMLHttpRequest();
@@ -386,6 +391,7 @@ function onClickStop() {
     req.open("POST", "/stop", true);
     req.send();
 }
+*/
 
 function initSpeedKetchup() {
     dashboard_set();
@@ -437,14 +443,14 @@ function initSpeedKetchup() {
 	    {},
 	    {
 		label: "Download",
-		value: (u, v) => (v == null ? d[1][d[1].length - 1] : v).toFixed(1) + "Mbps",
+		value: (u, v) => format3(v == null ? d[1][d[1].length - 1] : v) + "Mbps",
 		fill: "rgba(255, 0, 0, 0.7)",
 //		stroke: "red",
 		...series,
 	    },
 	    {
 		label: "Upload",
-		value: (u, v) => (v == null ? d[2][d[2].length - 1] : v).toFixed(1) + "Mbps",
+		value: (u, v) => format3(v == null ? d[2][d[2].length - 1] : v) + "Mbps",
 		fill: "rgba(0, 0, 255, 0.7)",
 //		stroke: "blue",
 		...series,
@@ -464,19 +470,19 @@ function initSpeedKetchup() {
 	    {},
 	    {
 		label: "Latency While Downloading",
-		value: (u, v) => (v == null ? d2[1][d2[1].length - 1] : v).toFixed(1) + "ms",
+		value: (u, v) => format3(v == null ? d2[1][d2[1].length - 1] : v) + "ms",
 		fill: "rgba(255, 0, 0, 0.3)",
 		...series,
 	    },
 	    {
 		label: "Latency While Uploading",
-		value: (u, v) => (v == null ? d2[2][d2[2].length - 1] : v).toFixed(1) + "ms",
+		value: (u, v) => format3(v == null ? d2[2][d2[2].length - 1] : v) + "ms",
 		fill: "rgba(0, 0, 255, 0.3)",
 		...series,
 	    },
 	    {
 		label: "Latency When Idle",
-		value: (u, v) => (v == null ? d2[3][d2[3].length - 1] : v).toFixed(1) + "ms",
+		value: (u, v) => format3(v == null ? d2[3][d2[3].length - 1] : v) + "ms",
 		fill: "rgba(50, 150, 50, 1)",
 		...series,
 	    },
