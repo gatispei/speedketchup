@@ -16,11 +16,9 @@ Prebuilt binaries for some platforms:
 - [windows x86_64 binary](bin/speedketchup.exe) (545k)
 - [macos universal binary](bin/speedketchup-macos) (1090k)
 
----
 ### Builtin web server
-![speedketchup webserver](img/ketchup.png "SpeedKetchup webserver")
+![speedketchup webserver](https://github.com/gatispei/speedketchup-files/blob/main/img/ketchup.png "SpeedKetchup webserver")
 
----
 ### Features
 
 - automatic speedtest server selection based on latency or run against specific speedtest server
@@ -31,7 +29,26 @@ Prebuilt binaries for some platforms:
 - all web assets are included in the program binary
 - linux version statically linked with [musl](https://musl.libc.org/) - not dependent on system [libc](https://en.wikipedia.org/wiki/C_standard_library), essentially a single binary container
 
----
+### Command Line
+
+<pre>
+usage: speedketchup [options]
+	-h|--help: print this
+	-v|--version: print version
+	-i|--interval <minutes>: test interval in minutes, 10 by default
+	-f|--file <filename>: file to store test results in, speedketchup-results.csv by default
+	-a|--address <local_addr>: address to listen on for incoming connections, 127.0.0.1 by default
+		local_addr: use 0.0.0.0 to accept connections on all addresses
+	-p|--port <port>: port to listen on for incoming connections, 8080 by default
+	-s|--server <server_host[:server_port]>: speedtest server to use, avoids automatic server selection if specified
+		server_host: domain_name|ipv4_addr|ipv6_addr
+		server_port: port number, 8080 by default
+	-dd|--download-duration <seconds>: how long to test download speed, 0 disables test, 10 seconds by default
+	-ud|--upload-duration <seconds>: how long to test download speed, 0 disables test, 10 seconds by default
+	-dc|--download-connections <number>: how many parallel connections to make for download, 8 connections by default
+	-uc|--uplaod-connections <number>: how many parallel connections to make for upload, 8 connections by default
+</pre>
+
 ### Alternatives
 
 - https://www.speedtest.net/apps/cli - official speedtest cli tool, binary only
