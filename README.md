@@ -11,10 +11,10 @@ The intent is to allow monitoring of your internet connection as easy as possibl
 You can use speedketchup for one-off test or keep it running continuously to spot any changes in your internet connection.
 
 Prebuilt binaries for some platforms:
-- [linux x86_64 binary](bin/speedketchup) (750k)
-- [linux arm binary](bin/speedketchup-arm) (650k)
-- [windows x86_64 binary](bin/speedketchup.exe) (545k)
-- [macos universal binary](bin/speedketchup-macos) (1090k)
+- [linux x86_64 binary](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup) (829k)
+- [linux arm binary](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm) (722k)
+- [windows x86_64 binary](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup.exe) (644k)
+- [macos universal binary](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-macos) (1243k)
 
 ### Builtin web server
 ![speedketchup webserver](https://github.com/gatispei/speedketchup-files/blob/main/img/ketchup.png "SpeedKetchup webserver")
