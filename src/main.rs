@@ -1302,7 +1302,7 @@ const HELP: &str = "usage: speedketchup [options]
 		server_host: domain_name|ipv4_addr|ipv6_addr
 		server_port: port number, 8080 by default
 	-dd|--download-duration <seconds>: how long to test download speed, 0 disables test, 10 seconds by default
-	-ud|--upload-duration <seconds>: how long to test download speed, 0 disables test, 10 seconds by default
+	-ud|--upload-duration <seconds>: how long to test upload speed, 0 disables test, 10 seconds by default
 	-dc|--download-connections <number>: how many parallel connections to make for download, 8 connections by default
 	-uc|--uplaod-connections <number>: how many parallel connections to make for upload, 8 connections by default
 ";

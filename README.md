@@ -35,18 +35,18 @@ Prebuilt binaries for some platforms:
 usage: speedketchup [options]
 	-h|--help: print this
 	-v|--version: print version
-	-i|--interval <minutes>: test interval in minutes, 10 by default
-	-f|--file <filename>: file to store test results in, speedketchup-results.csv by default
-	-a|--address <local_addr>: address to listen on for incoming connections, 127.0.0.1 by default
+	-i|--interval &ltminutes&gt: test interval in minutes, 10 by default
+	-f|--file &ltfilename&gt: file to store test results in, speedketchup-results.csv by default
+	-a|--address &ltlocal_addr&gt: address to listen on for incoming connections, 127.0.0.1 by default
 		local_addr: use 0.0.0.0 to accept connections on all addresses
-	-p|--port <port>: port to listen on for incoming connections, 8080 by default
-	-s|--server <server_host[:server_port]>: speedtest server to use, avoids automatic server selection if specified
+	-p|--port &ltport&gt: port to listen on for incoming connections, 8080 by default
+	-s|--server &ltserver_host[:server_port]&gt: speedtest server to use, avoids automatic server selection if specified
 		server_host: domain_name|ipv4_addr|ipv6_addr
 		server_port: port number, 8080 by default
-	-dd|--download-duration <seconds>: how long to test download speed, 0 disables test, 10 seconds by default
-	-ud|--upload-duration <seconds>: how long to test download speed, 0 disables test, 10 seconds by default
-	-dc|--download-connections <number>: how many parallel connections to make for download, 8 connections by default
-	-uc|--uplaod-connections <number>: how many parallel connections to make for upload, 8 connections by default
+	-dd|--download-duration &ltseconds&gt: how long to test download speed, 0 disables test, 10 seconds by default
+	-ud|--upload-duration &ltseconds&gt: how long to test upload speed, 0 disables test, 10 seconds by default
+	-dc|--download-connections &ltnumber&gt: how many parallel connections to make for download, 8 connections by default
+	-uc|--uplaod-connections &ltnumber&gt: how many parallel connections to make for upload, 8 connections by default
 </pre>
 
 ### Alternatives
