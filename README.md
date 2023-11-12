@@ -28,6 +28,7 @@ Prebuilt binaries for some platforms:
 - builtin web-server to display results with [uPlot](https://github.com/leeoniya/uPlot) chart
 - all web assets are included in the program binary
 - linux version statically linked with [musl](https://musl.libc.org/) - not dependent on system [libc](https://en.wikipedia.org/wiki/C_standard_library), essentially a single binary container
+- acts as a speedtest server itself. Not registered with official speedtest.net, but can be passed as speedtest server to supporting clients
 
 ### Command Line
 

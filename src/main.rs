@@ -430,6 +430,7 @@ Connection: close\r
 	    }
 	}
     }
+//    pr!("write post data done");
 
     // receive response
     loop {
@@ -442,7 +443,7 @@ Connection: close\r
 	match std::io::Read::read(&mut tcp_stream, &mut buf) {
 	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
 	    Err(_err) => {
-//		pr!("read {err}");
+//		pr!("read {_err}");
 		break
 	    }
 	    Ok(bytes_read) => {
@@ -839,6 +840,9 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 		})
 		.filter(|server| !ignore_servers.contains(&server.id))
 		.collect();
+	    if servers.len() == 0 {
+		pr!("servers_xml {:#?}", servers_xml);
+	    }
 	    servers.sort_by(|a, b| {
 		a.distance.partial_cmp(&b.distance).unwrap()
 	    });
@@ -856,10 +860,16 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
     set_status(state, "test latency")?;
     servers.truncate(10);
     servers_sort_by_latency(&mut servers)?;
-//    pr!("servers {:#?}", servers);
 
     let server = servers.iter().filter(|s| s.latency.is_some() )
-	.next().ok_or("no good server")?;
+	.next();
+    let server = match server {
+	Some(s) => s,
+	None => {
+	    pr!("servers {:#?}", servers);
+	    return Err(ErrorString("no good server".into()));
+	}
+    };
     pr!("test server {:?}", server);
     if let Ok(mut state) = state.lock() {
 	state.gauge_latency = server.latency;
@@ -1088,20 +1098,21 @@ fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStre
     let duration = Duration::from_secs(60);
     let now = Instant::now();
     let url = std::str::from_utf8(url)?;
+    let urls = url.strip_prefix("/").unwrap_or(&url);
     let content = std::str::from_utf8(content)?;
-//    pr!("request {url} {content}");
+//    pr!("request {urls} {content}");
     let mut _data: String = String::new();
 
-    let (data, content_type) = match url {
-	"/" => (ASSET_INDEX_HTML, "text/html; charset=utf-8"),
-	"/favicon.svg" => (ASSET_FAVICON_SVG, "image/svg+xml"),
-	"/uplot.js" => (ASSET_UPLOT_JS, "text/javascript"),
-	"/uplot.css" => (ASSET_UPLOT_CSS, "text/css"),
-	"/data.js" => {
+    let (data, content_type, additional_bytes) = match urls {
+	"" => (ASSET_INDEX_HTML, "text/html; charset=utf-8", 0),
+	"favicon.svg" => (ASSET_FAVICON_SVG, "image/svg+xml", 0),
+	"uplot.js" => (ASSET_UPLOT_JS, "text/javascript", 0),
+	"uplot.css" => (ASSET_UPLOT_CSS, "text/css", 0),
+	"data.js" => {
 	    _data = server_get_data(&state)?;
-	    (_data.as_bytes(), "text/javascript")
+	    (_data.as_bytes(), "text/javascript", 0)
 	},
-	"/status" => {
+	"status" => {
 	    let mut current_status = server_get_status(state)?;
 	    if content.len() > 0 && current_status == content {
 		while current_status == content {
@@ -1114,36 +1125,60 @@ fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStre
 		}
 	    }
 	    _data = current_status;
-	    (_data.as_bytes(), "text/plain")
+	    (_data.as_bytes(), "text/plain", 0)
 	},
-	"/start" => {
+	"start" => {
 	    pr!("start");
 	    let mut state = state.lock()?;
 	    state.test_requested = Some(true);
 	    let _ = state.to_main_sender.send(());
-	    ("".as_bytes(), "text/plain")
+	    ("".as_bytes(), "text/plain", 0)
 	},
-	"/stop" => {
+	"stop" => {
 	    pr!("stop");
 	    state.lock()?.test_requested = Some(false);
-	    ("".as_bytes(), "text/plain")
+	    ("".as_bytes(), "text/plain", 0)
 	},
-	_ => ("404".as_bytes(), "text/html"),
+	"speedtest/latency.txt" => {
+	    ("test=test".as_bytes(), "text/plain", 0)
+	},
+	"speedtest/upload.php" => ("".as_bytes(), "text/plain", 0),
+	"speedtest/random350x350.jpg" => ("".as_bytes(), "text/plain", 245388),
+	"speedtest/random500x500.jpg" => ("".as_bytes(), "text/plain", 505544),
+	"speedtest/random750x750.jpg" => ("".as_bytes(), "text/plain", 1118012),
+	"speedtest/random1000x1000.jpg" => ("".as_bytes(), "text/plain", 1986284),
+	"speedtest/random1500x1500.jpg" => ("".as_bytes(), "text/plain", 4468241),
+	"speedtest/random2000x2000.jpg" => ("".as_bytes(), "text/plain", 7907740),
+	"speedtest/random2500x2500.jpg" => ("".as_bytes(), "text/plain", 12407926),
+	"speedtest/random3000x3000.jpg" => ("".as_bytes(), "text/plain", 17816816),
+	"speedtest/random3500x3500.jpg" => ("".as_bytes(), "text/plain", 24262167),
+	"speedtest/random4000x4000.jpg" => ("".as_bytes(), "text/plain", 31625365),
+	"speedtest/upload.php/random350x350.jpg" => ("".as_bytes(), "text/plain", 245388),
+	"speedtest/upload.php/random500x500.jpg" => ("".as_bytes(), "text/plain", 505544),
+	"speedtest/upload.php/random750x750.jpg" => ("".as_bytes(), "text/plain", 1118012),
+	"speedtest/upload.php/random1000x1000.jpg" => ("".as_bytes(), "text/plain", 1986284),
+	"speedtest/upload.php/random1500x1500.jpg" => ("".as_bytes(), "text/plain", 4468241),
+	"speedtest/upload.php/random2000x2000.jpg" => ("".as_bytes(), "text/plain", 7907740),
+	"speedtest/upload.php/random2500x2500.jpg" => ("".as_bytes(), "text/plain", 12407926),
+	"speedtest/upload.php/random3000x3000.jpg" => ("".as_bytes(), "text/plain", 17816816),
+	"speedtest/upload.php/random3500x3500.jpg" => ("".as_bytes(), "text/plain", 24262167),
+	"speedtest/upload.php/random4000x4000.jpg" => ("".as_bytes(), "text/plain", 31625365),
+	_ => {
+	    pr!("unknown path {}", urls);
+	    ("404".as_bytes(), "text/html", 0)
+	},
     };
 
     let mut resp = format!("HTTP/1.1 200 OK\r
 Content-Type: {content_type}\r
 Content-Length: {}\r
 \r
-", data.len()).as_bytes().to_vec();
+", data.len() + additional_bytes).as_bytes().to_vec();
     resp.extend_from_slice(data);
     let mut bytes_written = 0;
 
     // send post data
-    loop {
-	if bytes_written >= resp.len() {
-	    break;
-	}
+    while bytes_written < resp.len() {
 	let timeout = duration.checked_sub(now.elapsed());
 	if timeout.is_none() {
 	    return Err("write timeout".into());
@@ -1165,6 +1200,30 @@ Content-Length: {}\r
 	}
     }
 
+    if additional_bytes > 0 {
+//	pr!("send additional bytes {}", additional_bytes);
+	let buf = [0_u8; 1024 * 8];
+	bytes_written = 0;
+	while bytes_written < additional_bytes {
+	    let timeout = duration.checked_sub(now.elapsed());
+	    if timeout.is_none() {
+		return Err("write timeout".into());
+	    }
+	    stream.set_write_timeout(timeout)?;
+	    let len = std::cmp::min(additional_bytes - bytes_written, buf.len());
+	    match std::io::Write::write(&mut stream, &buf[0..len]) {
+		Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+		Err(_err) => break,
+		Ok(ret) => {
+		    if ret == 0 {
+			return Err("write closed".into());
+		    }
+		    bytes_written += ret
+		}
+	    }
+	}
+//	pr!("sent additional bytes {}", bytes_written);
+    }
 //    pr!("request done");
     Ok(())
 }
@@ -1174,9 +1233,11 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
     let duration = Duration::from_secs(10);
     let mut now = Instant::now();
     let mut buf = [0_u8; 1024 * 8];
+    let mut drop_buf = [0_u8; 1024 * 8];
     let mut bytes_read = 0;
     let mut hdrend_off = 0;
     let mut content_length: usize = 0;
+    let mut close = false;
     loop {
 //	while rx.try_recv().is_ok() {
 	    // clear out status notification queue
@@ -1186,7 +1247,10 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 	    return Err("read timeout".into());
 	}
 	stream.set_read_timeout(timeout)?;
-	match std::io::Read::read(&mut stream, &mut buf[bytes_read..]) {
+	match match bytes_read < buf.len() {
+	    true => std::io::Read::read(&mut stream, &mut buf[bytes_read..]),
+	    false => std::io::Read::read(&mut stream, &mut drop_buf)
+	} {
 	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
 	    Err(_e) => {
 //		pr!("read {e}");
@@ -1203,20 +1267,23 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 	if hdrend_off == 0 {
 	    if let Some(off) = memmem(&buf, b"\r\n\r\n") {
 		hdrend_off = off;
-		let hdr = &buf[0..hdrend_off];
+		let hdr = &buf[0..hdrend_off + 2];
 //		pr!("request: {}", std::str::from_utf8(hdr).unwrap());
 		http_headers(hdr, |hdr_type, hdr_val| {
-		    if hdr_type.to_ascii_lowercase() != b"content-length" {
-			return
+//		    pr!("hdr: {}", std::str::from_utf8(hdr_type).unwrap());
+		    if hdr_type.to_ascii_lowercase() == b"connection" && hdr_val.to_ascii_lowercase() == b"close" {
+			close = true;
 		    }
-		    content_length = std::str::from_utf8(hdr_val).unwrap_or_default().parse().unwrap_or_default();
+		    if hdr_type.to_ascii_lowercase() == b"content-length" {
+			content_length = std::str::from_utf8(hdr_val).unwrap_or_default().parse().unwrap_or_default();
+		    }
 		});
 		hdrend_off += 4;
 	    }
 	}
 	if bytes_read >= hdrend_off + content_length {
 	    let hdr = &buf[0..hdrend_off];
-	    let content = &buf[hdrend_off..(hdrend_off + content_length)];
+	    let content = &buf[hdrend_off..std::cmp::min(hdrend_off + content_length, buf.len())];
 	    let mut iter = hdr.split(|c| *c == b' ');
 	    match iter.next() {
 		Some(b"GET") | Some(b"POST") => {
@@ -1227,15 +1294,20 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 		}
 		_ => return Err("bad request method".into()),
 	    }
+	    if close == true {
+		break;
+	    }
 
-	    buf.copy_within((hdrend_off + content_length)..bytes_read, 0);
-	    bytes_read -= hdrend_off + content_length;
+	    if hdrend_off + content_length < buf.len() {
+		buf.copy_within((hdrend_off + content_length)..bytes_read, 0);
+		bytes_read -= hdrend_off + content_length;
+	    }
+	    else {
+		bytes_read = 0;
+	    }
 	    hdrend_off = 0;
 	    content_length = 0;
 	    now = Instant::now();
-	}
-	if bytes_read >= buf.len() {
-	    return Err("read too long req".into());
 	}
     }
     pr!("close connection");
