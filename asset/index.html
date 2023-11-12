@@ -11,6 +11,22 @@
       html, body {
 	  max-width: 100%;
 	  overflow-x: hidden;
+	  -webkit-tap-highlight-color:transparent;
+      }
+      .settings_content {
+	  display: none;
+	  position: absolute;
+	  min-width: 150px;
+	  background-color: #fff;
+	  box-shadow: 10px 10px 30px 0px #000f;
+	  border-radius: 25px;
+	  padding: 25px;
+	  z-index: 1;
+	  margin-left: 50%;
+	  transform: translateX(-50%);
+      }
+      .show {
+	  display: block;
       }
     </style>
   </head>
@@ -23,18 +39,24 @@
 	      font-size: 6px;
 	      cursor: default;
 	      user-select: none;
+	      -webkit-user-select: none;
+	      -ms-user-select: none;
 	  }
 	  .bt {
 	      font-family: verdana;
 	      font-size: 15px;
 	      cursor: default;
 	      user-select: none;
+	      -webkit-user-select: none;
+	      -ms-user-select: none;
 	  }
 	  .gt {
 	      font-family: verdana;
 	      font-size: 15px;
 	      cursor: pointer;
 	      user-select: none;
+	      -webkit-user-select: none;
+	      -ms-user-select: none;
 	  }
 	  .button {
 	      filter: drop-shadow(0px 0px 2px #0000);
@@ -164,7 +186,7 @@
 	  <circle cx="100" cy="21" r="14" fill="#ddd" />
 	  <circle cx="100" cy="21" r="4" fill="#fff" />
 	</g>
-	<g id="settings_button" class="button" style="cursor:pointer; visibility: hidden;" onclick="onClickSettings()">
+	<g id="settings_button" class="button" style="cursor:pointer; visibility: visible;" onclick="onClickSettings()">
 	  <title>Settings Menu</title>
 	  <circle cx="100" cy="79" r="14" fill="#cc0" />
 	  <text text-anchor="middle" x="100" y="84.5" class="gt">⚙️</text>
@@ -177,6 +199,14 @@
 	<text text-anchor="middle" x="100" y="52" class="st"><title>Time Till Next Test</title><tspan id="time_till_next"></tspan></text>
 	<text text-anchor="middle" x="0" y="98" class="st"><title>Latency When Idle</title><tspan id="idle_latency"></tspan></text>
       </svg>
+    </div>
+
+    <div id="settings" class="settings_content">
+      <div>Test Interval</div>
+      <div>Download Duration</div>
+      <div>Upload Duration</div>
+      <div>Download Connections</div>
+      <div>Upload Connections</div>
     </div>
     <div id="chart1"></div>
     <div id="chart2"></div>
@@ -201,6 +231,10 @@ function format3(num) {
     if (num < 10) return "" + num.toFixed(2);
     if (num < 100) return "" + num.toFixed(1);
     return "" + num;
+}
+
+function el(id) {
+    return document.getElementById(id);
 }
 
 function debug(str) {
@@ -278,9 +312,6 @@ function request(obj, cb) {
 }
 
 var stateStr = "";
-function el(id) {
-    return document.getElementById(id);
-}
 function dashboard_set() {
     if (!stateObj || !stateObj.state) {
 	el("start_button").style.visibility = "hidden";
@@ -335,7 +366,7 @@ function dashboard_set() {
 }
 
 function onRequest(r) {
-    debug("on request " + r);
+//    debug("on request " + r);
     if (r == null) {
 	stateStr = "connection lost";
 	stateObj = {};
@@ -345,16 +376,18 @@ function onRequest(r) {
     }
 
     stateStr = r;
-    obj = JSON.parse(r);
-    debug("old:" + stateObj.state + " new:" + obj.state);
-    if (stateObj.state && stateObj.state != "idle" && obj.state == "idle") {
+    stateNew = JSON.parse(r);
+    if (stateObj.state != stateNew.state)  {
+	debug("old:" + stateObj.state + " new:" + stateNew.state);
+    }
+    if (stateObj.state && stateObj.state != "idle" && stateNew.state == "idle") {
 	// reload when going idle
 	debug("reload on idle");
 	window.location.reload();
 	return;
     }
     stateOld = stateObj;
-    stateObj = obj;
+    stateObj = stateNew;
     if (stateObj.idle_time) {
 	updateIdleTime();
     }
@@ -410,8 +443,31 @@ function onClickStop() {
 
 function onClickSettings() {
     debug("settings");
+    el("settings").classList.toggle("show");
 }
 
+// close settings if the user clicks outside of it
+window.onclick = function(e) {
+    debug("window onclick");
+    var sb = el("settings_button");
+    var s = el("settings");
+    debug(s.contains(e.target));
+    if (!s.contains(e.target) && !sb.contains(e.target)) {
+	var x = document.getElementById("settings");
+	if (x.classList.contains('show')) {
+	    x.classList.remove('show');
+	}
+    }
+}
+
+/*
+if (typeof stateObj == "undefined") {
+    stateObj = {};
+}
+if (typeof data == "undefined") {
+    data = [[],[],[],[],[],[]];
+}
+*/
 function initSpeedKetchup() {
     dashboard_set();
 
