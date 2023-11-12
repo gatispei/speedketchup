@@ -227,6 +227,7 @@ function formatNumber(num, width) {
     return ret;
 }
 function format3(num) {
+    if (typeof num == "undefined" || num == NaN) return "";
     if (num < 1) return "" + num.toFixed(3);
     if (num < 10) return "" + num.toFixed(2);
     if (num < 100) return "" + num.toFixed(1);
