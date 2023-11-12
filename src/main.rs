@@ -134,8 +134,8 @@ struct SpeedTestResult {
     latency_idle: Option<Duration>,
     latency_download: Option<Duration>,
     latency_upload: Option<Duration>,
-    download: f32,
-    upload: f32,
+    download: Option<f32>,
+    upload: Option<f32>,
     client_public_ip: Ipv6Addr,
     client_isp: String,
     server: SpeedTestServer,
@@ -144,12 +144,18 @@ struct SpeedTestResult {
 //    server_host: String,
 }
 
+#[derive(Clone)]
 struct SpeedTestConfig {
     test_interval: u64,
     store_filename: String,
     listen_port: u16,
     listen_address: String,
     server_host: Option<String>,
+
+    download_duration: u32,
+    download_connections: u32,
+    upload_duration: u32,
+    upload_connections: u32,
 }
 
 struct SpeedTestState {
@@ -631,7 +637,7 @@ fn test_multithread<CB>(
     thread_count: u32,
     func: fn(&str, Duration, &Vec<u32>, progress: &Arc<AtomicUsize>) -> Result<usize, ErrorString>,
     mut cb: CB)
-    -> Result<(f32, Option<Duration>), ErrorString>
+    -> Result<(Option<f32>, Option<Duration>), ErrorString>
 where
     CB: FnMut(u32, f32, Option<Duration>) -> ()
 {
@@ -704,7 +710,7 @@ where
     let mbps = (bytes.iter().sum::<usize>() as u64 * 8 / duration.as_millis() as u64) as f32 / 1000.0;
     cb(100, mbps, latency);
     pr!("{test_type} mbps:{mbps} bytes:{:?}", bytes);
-    Ok((mbps, latency))
+    Ok((Some(mbps), latency))
 }
 
 fn set_status(state: &Arc<Mutex<SpeedTestState>>, new_status: &str) ->Result<(), ErrorString> {
@@ -719,6 +725,7 @@ fn set_status(state: &Arc<Mutex<SpeedTestState>>, new_status: &str) ->Result<(),
 fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Result<SpeedTestResult, ErrorString> {
     pr!("speedtest");
     set_status(state, "get provider info")?;
+    let cfg = state.lock()?.config.clone();
     let resp = http_get_follow_redirects("www.speedtest.net", "/speedtest-config.php")?;
 //    pr!("status:{} body:{}", http_status_code(&resp)?, http_body(&resp)?);
     let config_xml = http_body(&resp)?;
@@ -729,9 +736,9 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
     let server_config_node = config.descendants()
         .find(|n| n.has_tag_name("server-config"))
         .ok_or("no server-config")?;
-    let download_node = config.descendants()
-        .find(|n| n.has_tag_name("download"))
-        .ok_or("no download")?;
+//    let download_node = config.descendants()
+//        .find(|n| n.has_tag_name("download"))
+//        .ok_or("no download")?;
     let upload_node = config.descendants()
         .find(|n| n.has_tag_name("upload"))
         .ok_or("no upload")?;
@@ -773,26 +780,26 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 //        .ok_or("no threadsperurl")?
 //        .parse::<u32>()?;
 
-    let upload_threads = upload_node
-        .attribute("threads")
-        .ok_or("no threads")?
-        .parse::<u32>()?;
-    let download_threads = server_config_node
-        .attribute("threadcount")
-        .ok_or("no threadcount")?
-        .parse::<u32>()?
-        * 2;
+//     let upload_threads = upload_node
+//         .attribute("threads")
+//         .ok_or("no threads")?
+//         .parse::<u32>()?;
+//     let download_threads = server_config_node
+//         .attribute("threadcount")
+//         .ok_or("no threadcount")?
+//         .parse::<u32>()?
+//         * 2;
 
-    let upload_duration = upload_node
-        .attribute("testlength")
-        .ok_or("no upload testlength")?
-        .parse::<u64>()
-        .map(Duration::from_secs)?;
-    let download_duration = download_node
-        .attribute("testlength")
-        .ok_or("no download testlength")?
-        .parse::<u64>()
-        .map(Duration::from_secs)?;
+//     let upload_duration = upload_node
+//         .attribute("testlength")
+//         .ok_or("no upload testlength")?
+//         .parse::<u64>()
+//         .map(Duration::from_secs)?;
+//     let download_duration = download_node
+//         .attribute("testlength")
+//         .ok_or("no download testlength")?
+//         .parse::<u64>()
+//         .map(Duration::from_secs)?;
 
     let client_ip: Ipv6Addr = client_node
         .attribute("ip")
@@ -858,33 +865,43 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 	state.gauge_latency = server.latency;
     }
 
-    set_status(state, "test download")?;
-    let (download_mbps, download_latency) = test_multithread("download", &server.host, download_duration, &download_sizes, download_threads, test_download, |progress, speed, latency|{
-	if let Ok(mut state) = state.lock() {
-	    state.gauge_download_progress = Some(progress);
-	    state.gauge_download_mbps = Some(speed);
-	    state.gauge_download_latency = latency;
-	    for (_threadid, tx) in state.to_conn_senders.iter() {
-		let _ = tx.send(());
+    let mut download_mbps = None;
+    let mut download_latency = None;
+    let mut upload_mbps = None;
+    let mut upload_latency = None;
+    if cfg.download_duration > 0 {
+	set_status(state, "test download")?;
+	(download_mbps, download_latency) = test_multithread("download", &server.host, Duration::from_secs(cfg.download_duration as u64), &download_sizes, cfg.download_connections, test_download, |progress, speed, latency|{
+	    if let Ok(mut state) = state.lock() {
+		state.gauge_download_progress = Some(progress);
+		state.gauge_download_mbps = Some(speed);
+		state.gauge_download_latency = latency;
+		for (_threadid, tx) in state.to_conn_senders.iter() {
+		    let _ = tx.send(());
+		}
 	    }
+	})?;
+
+	if cfg.upload_duration > 0 {
+	    // allow some time for downloads to stop
+	    set_status(state, "test wait")?;
+	    std::thread::sleep(Duration::from_secs(1));
 	}
-    })?;
+    }
 
-    // allow some time for downloads to stop
-    set_status(state, "test wait")?;
-    std::thread::sleep(Duration::from_secs(1));
-
-    set_status(state, "test upload")?;
-    let (upload_mbps, upload_latency) = test_multithread("upload", &server.host, upload_duration, &upload_sizes, upload_threads, test_upload, |progress, speed, latency|{
-	if let Ok(mut state) = state.lock() {
-	    state.gauge_upload_progress = Some(progress);
-	    state.gauge_upload_mbps = Some(speed);
-	    state.gauge_upload_latency = latency;
-	    for (_threadid, tx) in state.to_conn_senders.iter() {
-		let _ = tx.send(());
+    if cfg.upload_duration > 0 {
+	set_status(state, "test upload")?;
+	(upload_mbps, upload_latency) = test_multithread("upload", &server.host, Duration::from_secs(cfg.upload_duration as u64), &upload_sizes, cfg.upload_connections, test_upload, |progress, speed, latency|{
+	    if let Ok(mut state) = state.lock() {
+		state.gauge_upload_progress = Some(progress);
+		state.gauge_upload_mbps = Some(speed);
+		state.gauge_upload_latency = latency;
+		for (_threadid, tx) in state.to_conn_senders.iter() {
+		    let _ = tx.send(());
+		}
 	    }
-	}
-    })?;
+	})?;
+    }
 
     Ok(SpeedTestResult {
 	latency_idle: server.latency,
@@ -912,6 +929,13 @@ fn dur_to_str(n: Option<Duration>) -> String {
     }
 }
 
+fn opt_float_to_str(n: Option<f32>) -> String {
+    match n {
+	None => String::new(),
+	Some(n) => float_to_str(n),
+    }
+}
+
 const CSV_COLS: &str = "Timestamp,LatencyIdle(ms),LatencyDownload(ms),LatencyUpload(ms),Download(Mbps),Upload(Mbps),ClientPublicIP,ClientISP,ServerDescr,ServerHost,Error\n";
 fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
     let str = match result {
@@ -920,7 +944,7 @@ fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
 			 dur_to_str(r.latency_idle),
 			 dur_to_str(r.latency_download),
 			 dur_to_str(r.latency_upload),
-			 float_to_str(r.download), float_to_str(r.upload),
+			 opt_float_to_str(r.download), opt_float_to_str(r.upload),
 			 r.client_public_ip, r.client_isp,
 			 r.server.descr, r.server.host),
 	Err(e) => format!("{},,,,,,,,,,{e}\n", timestr()),
@@ -1278,7 +1302,12 @@ const HELP: &str = "usage: speedketchup [options]
 	-p|--port <port>: port to listen on for incoming connections, 8080 by default
 	-s|--server <server_host[:server_port]>: speedtest server to use, avoids automatic server selection if specified
 		server_host: domain_name|ipv4_addr|ipv6_addr
-		server_port: port number, 8080 by default";
+		server_port: port number, 8080 by default
+	-dd|--download-duration <seconds>: how long to test download speed, 0 disables test, 10 seconds by default
+	-ud|--upload-duration <seconds>: how long to test download speed, 0 disables test, 10 seconds by default
+	-dc|--download-connections <number>: how many parallel connections to make for download, 8 connections by default
+	-uc|--uplaod-connections <number>: how many parallel connections to make for upload, 8 connections by default
+";
 fn exit(str: &str, code: i32) -> ! {
     match code {
 	0 => eprintln!("{str}"),
@@ -1286,6 +1315,7 @@ fn exit(str: &str, code: i32) -> ! {
     };
     std::process::exit(code);
 }
+
 fn main() {
     let mut config = SpeedTestConfig {
 	test_interval: 10,
@@ -1293,6 +1323,10 @@ fn main() {
 	listen_port: 8080,
 	listen_address: "127.0.0.1".to_string(),
 	server_host: None,
+	download_duration: 10,
+	download_connections: 8,
+	upload_duration: 10,
+	upload_connections: 8,
     };
 
     let args = std::env::args().collect::<Vec<_>>();
@@ -1343,6 +1377,42 @@ fn main() {
 		    None => exit("no server given", -1),
 		}
 	    },
+	    "-dd" | "--download-duration" => {
+		config.download_duration = match it.next() {
+		    Some(x) => match x.parse() {
+			Ok(i) => i,
+			Err(_) => exit("bad duration", -1),
+		    },
+		    None => exit("no duration given", -1),
+		}
+	    },
+	    "-dc" | "--download-connections" => {
+		config.download_connections = match it.next() {
+		    Some(x) => match x.parse() {
+			Ok(i) => i,
+			Err(_) => exit("bad number", -1),
+		    },
+		    None => exit("no number given", -1),
+		}
+	    },
+	    "-ud" | "--upload-duration" => {
+		config.upload_duration = match it.next() {
+		    Some(x) => match x.parse() {
+			Ok(i) => i,
+			Err(_) => exit("bad duration", -1),
+		    },
+		    None => exit("no duration given", -1),
+		}
+	    },
+	    "-uc" | "--upload-connections" => {
+		config.upload_connections = match it.next() {
+		    Some(x) => match x.parse() {
+			Ok(i) => i,
+			Err(_) => exit("bad number", -1),
+		    },
+		    None => exit("no number given", -1),
+		}
+	    },
 	    _ => exit(&format!("unknown arg '{}'", arg), -1),
 	}
     }
@@ -1355,8 +1425,11 @@ fn main() {
 	     config.listen_address, config.listen_port);
     println!("{ATTR_GREEN}server: {ATTR_BOLD}{}{ATTR_RESET}",
 	     match &config.server_host { None => "<automatic>", Some(x) => &x });
+    println!("{ATTR_GREEN}download-duration: {ATTR_BOLD}{}s{ATTR_RESET}", config.download_duration);
+    println!("{ATTR_GREEN}download-connections: {ATTR_BOLD}{}{ATTR_RESET}", config.download_connections);
+    println!("{ATTR_GREEN}upload-duration: {ATTR_BOLD}{}s{ATTR_RESET}", config.upload_duration);
+    println!("{ATTR_GREEN}upload-connections: {ATTR_BOLD}{}{ATTR_RESET}", config.upload_connections);
     let sk_url = &format!("http://127.0.0.1:{}", config.listen_port);
-    println!("speedketchup is at {ATTR_BOLD}{sk_url}{ATTR_RESET}");
 
     let listener = match std::net::TcpListener::bind((config.listen_address.as_str(), config.listen_port)) {
 	Err(e) => exit(&format!("could not bind {}:{}: {}", config.listen_address, config.listen_port, e), -1),
@@ -1370,6 +1443,7 @@ fn main() {
 	Err(e) => pr!("could not open {sk_url}: {e}"),
 	Ok(_) => ()
     };
+    println!("speedketchup is at {ATTR_BOLD}{sk_url}{ATTR_RESET}");
 
     let (tx, rx) = mpsc::channel();
     let state = Arc::new(Mutex::new(SpeedTestState {
@@ -1412,7 +1486,7 @@ fn main() {
 	    Ok(r) => {
 //		pr!("result: {:#?}", r);
 		pr!("speedtest latency:idle-{}ms/dl-{}ms/ul-{}ms download:{}Mbps upload:{}Mbps client_ip:{} isp:{} server:{}",
-		    dur_to_str(r.latency_idle), dur_to_str(r.latency_download), dur_to_str(r.latency_upload), r.download, r.upload, r.client_public_ip, r.client_isp, r.server.host);
+		    dur_to_str(r.latency_idle), dur_to_str(r.latency_download), dur_to_str(r.latency_upload), opt_float_to_str(r.download), opt_float_to_str(r.upload), r.client_public_ip, r.client_isp, r.server.host);
 	    }
 	};
 	let mut filename = String::new();

@@ -188,7 +188,7 @@
 	</g>
 	<g id="settings_button" class="button" style="cursor:pointer; visibility: visible;" onclick="onClickSettings()">
 	  <title>Settings Menu</title>
-	  <circle cx="100" cy="79" r="14" fill="#cc0" />
+	  <circle cx="100" cy="79" r="14" fill="#ed4" />
 	  <text text-anchor="middle" x="100" y="84.5" class="gt">⚙️</text>
 	</g>
 	<g id="disconnected2_button" style="visibility: hidden;">
@@ -448,26 +448,15 @@ function onClickSettings() {
 
 // close settings if the user clicks outside of it
 window.onclick = function(e) {
-    debug("window onclick");
     var sb = el("settings_button");
     var s = el("settings");
-    debug(s.contains(e.target));
     if (!s.contains(e.target) && !sb.contains(e.target)) {
-	var x = document.getElementById("settings");
-	if (x.classList.contains('show')) {
-	    x.classList.remove('show');
+	if (s.classList.contains('show')) {
+	    s.classList.remove('show');
 	}
     }
 }
 
-/*
-if (typeof stateObj == "undefined") {
-    stateObj = {};
-}
-if (typeof data == "undefined") {
-    data = [[],[],[],[],[],[]];
-}
-*/
 function initSpeedKetchup() {
     dashboard_set();
 
