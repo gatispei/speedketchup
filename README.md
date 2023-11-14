@@ -13,10 +13,10 @@ You can use speedketchup for one-off test or keep it running continuously to spo
 Prebuilt executables for some platforms:
 | platform | executable | [upx](https://upx.github.io/)-compressed executable |
 |-|-|-|
-|linux x86_64|[846k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64)|[387k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx)|
-|linux aarch64|[722k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-aarch64)|[378k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-aarch64-upx)|
-|linux arm|[734k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm)|[384k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm-upx)|
-|windows x86_64|[657k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64.exe)|[305k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx.exe)|
+|linux x86_64|[846k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64)|[328k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx)|
+|linux aarch64|[722k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-aarch64)|[302k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-aarch64-upx)|
+|linux arm|[734k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm)|[299k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm-upx)|
+|windows x86_64|[657k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64.exe)|[259k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx.exe)|
 |macos universal (x86_64 + aarch64)|[1259k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-macos)|
 
 ### Builtin web server
