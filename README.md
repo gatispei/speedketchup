@@ -10,11 +10,14 @@ This aims to be small, efficient all-in-one program (statically linked, includes
 The intent is to allow monitoring of your internet connection as easy as possible.
 You can use speedketchup for one-off test or keep it running continuously to spot any changes in your internet connection.
 
-Prebuilt binaries for some platforms:
-- [linux x86_64 binary](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup) (829k)
-- [linux arm binary](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm) (722k)
-- [windows x86_64 binary](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup.exe) (644k)
-- [macos universal binary](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-macos) (1243k)
+Prebuilt executables for some platforms:
+| platform | executable | [upx](https://upx.github.io/)-compressed executable |
+|-|-|-|
+|linux x86_64|[846k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64)|[387k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx)|
+|linux aarch64|[722k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-aarch64)|[378k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-aarch64-upx)|
+|linux arm|[734k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm)|[384k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm-upx)|
+|windows x86_64|[657k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64.exe)|[305k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx.exe)|
+|macos universal (x86_64 + aarch64)|[1259k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-macos)|
 
 ### Builtin web server
 ![speedketchup webserver](https://github.com/gatispei/speedketchup-files/blob/main/img/ketchup.png "SpeedKetchup webserver")
