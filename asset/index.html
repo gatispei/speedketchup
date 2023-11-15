@@ -226,12 +226,12 @@ function formatNumber(num, width) {
     }
     return ret;
 }
-function format3(num) {
-    if (typeof num == "undefined" || num == NaN) return "";
-    if (num < 1) return "" + num.toFixed(3);
-    if (num < 10) return "" + num.toFixed(2);
-    if (num < 100) return "" + num.toFixed(1);
-    return "" + num;
+function format3(num, postfix = "") {
+    if (typeof num == "undefined" || num == NaN || num == null) return "";
+    if (num < 1) return "" + num.toFixed(3) + postfix;
+    if (num < 10) return "" + num.toFixed(2) + postfix;
+    if (num < 100) return "" + num.toFixed(1) + postfix;
+    return "" + num.toFixed(0) + postfix;
 }
 
 function el(id) {
@@ -334,7 +334,7 @@ function dashboard_set() {
 	el("stop_button").style.visibility = "visible";
     }
     if (stateObj.latency) {
-	el("idle_latency").textContent = format3(stateObj.latency) + "ms";
+	el("idle_latency").textContent = format3(stateObj.latency, "ms");
     }
     if (stateObj.download_mbps) {
 	el("download_mbps").textContent = format3(stateObj.download_mbps);
@@ -348,7 +348,7 @@ function dashboard_set() {
 	el("download_progress_band").setAttribute("d", "M45 50" + degrees_to_clip_path(deg));
     }
     if (stateObj.download_latency) {
-	el("download_latency").textContent = format3(stateObj.download_latency) + "ms";
+	el("download_latency").textContent = format3(stateObj.download_latency, "ms");
     }
     if (stateObj.upload_mbps) {
 	el("upload_mbps").textContent = format3(stateObj.upload_mbps);
@@ -362,7 +362,7 @@ function dashboard_set() {
 	el("upload_progress_band").setAttribute("d", "M155 50" + degrees_to_clip_path(deg));
     }
     if (stateObj.upload_latency) {
-	el("upload_latency").textContent = format3(stateObj.upload_latency) + "ms";
+	el("upload_latency").textContent = format3(stateObj.upload_latency, "ms");
     }
 }
 
@@ -458,6 +458,8 @@ window.onclick = function(e) {
     }
 }
 
+var chart1 = null;
+var chart2 = null;
 function initSpeedKetchup() {
     dashboard_set();
 
@@ -490,42 +492,113 @@ function initSpeedKetchup() {
             },
 	},
     ];
-    let series = {
+    let seriesOpts = {
 	points: {
 	    show: false,
 	    size: 5,
 	    fill: "black",
 	}
     };
+    
+    function get_aggregates_for_series(data, minx, maxx, series_idx) {
+	let aggs = { min: null, max: null, avg: null };
+	let cnt = 0;
+	let sum = 0;
+	for (let i in data[0]) {
+	    if (data[0][i] < minx) {
+		continue;
+	    }
+	    if (data[0][i] > maxx) {
+		break;
+	    }
+
+	    let val = data[series_idx][i];
+	    if (val == null) {
+		continue;
+	    }
+	    if (aggs.min == null || val < aggs.min) {
+		aggs.min = val;
+	    }
+	    if (aggs.max == null || val > aggs.max) {
+		aggs.max = val;
+	    }
+	    cnt += 1;
+	    sum += val;
+	}
+	if (cnt > 0) {
+	    aggs.avg = sum / cnt;
+	}
+	return aggs;
+    };
+    let legendFmt = uPlot.fmtDate("{YYYY}-{MMM}-{D} {H}:{mm}:{ss}");
+    function get_values_for_legend(data, aggs, series_idx, idx) {
+	if (idx == null) {
+	    idx = data[0].length - 1;
+	}
+	let date = new Date(data[0][idx] * 1e3);
+	return {
+	    Time: legendFmt(date),
+	    Value: format3(data[series_idx][idx]),
+	    Min: format3(aggs[series_idx].min),
+	    Avg: format3(aggs[series_idx].avg),
+	    Max: format3(aggs[series_idx].max),
+	};
+    }
 
     let d = [data[0], data[4], data[5]];
+    let aggregates = [];
+    for (let i in d) {
+	aggregates.push({ min: null, max: null, avg: null });
+    }
+
+    let d2 = [data[0], data[2], data[3], data[1]];
+    let aggregates2 = [];
+    for (let i in d2) {
+	aggregates2.push({ min: null, max: null, avg: null });
+    }
+
     let opts = {
 	title: "Speed (Bandwidth)",
 	...getSize(),
 	cursor: cursorOpts,
 	drawOrder: ["series", "axes"],
+
+	scales: {
+	    x: {
+		range: (_, min, max) => {
+//		    debug("scales x min:" + min + " max:" + max);
+		    for (let i = 1; i < d.length; i++) {
+			aggregates[i] = get_aggregates_for_series(d, min, max, i);
+		    }
+		    for (let i = 1; i < d2.length; i++) {
+			aggregates2[i] = get_aggregates_for_series(d2, min, max, i);
+		    }
+		    chart1.setLegend();
+		    chart2.setLegend();
+		    return [min, max];
+		}
+	    },
+	},
+
 	series: [
 	    {},
 	    {
-		label: "Download",
-		value: (u, v) => format3(v == null ? d[1][d[1].length - 1] : v) + "Mbps",
+		label: "Download (Mbps)",
 		fill: "rgba(255, 0, 0, 0.7)",
-//		stroke: "red",
-		...series,
+		...seriesOpts,
+		values: (u, sidx, idx) => { return get_values_for_legend(d, aggregates, sidx, idx); }
 	    },
 	    {
-		label: "Upload",
-		value: (u, v) => format3(v == null ? d[2][d[2].length - 1] : v) + "Mbps",
+		label: "Upload (Mbps)",
 		fill: "rgba(0, 0, 255, 0.7)",
-//		stroke: "blue",
-		...series,
+		...seriesOpts,
+		values: (u, sidx, idx) => { return get_values_for_legend(d, aggregates, sidx, idx); }
 	    }
 	],
 	axes: axis,
     };
-    let uplot = new uPlot(opts, d, document.getElementById("chart1"));
+    chart1 = new uPlot(opts, d, document.getElementById("chart1"));
 
-    let d2 = [data[0], data[2], data[3], data[1]];
     let opts2 = {
 	title: "Ping (Latency)",
 	...getSize(),
@@ -535,30 +608,30 @@ function initSpeedKetchup() {
 	    {},
 	    {
 		label: "Latency While Downloading",
-		value: (u, v) => format3(v == null ? d2[1][d2[1].length - 1] : v) + "ms",
 		fill: "rgba(255, 0, 0, 0.3)",
-		...series,
+		...seriesOpts,
+		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx); }
 	    },
 	    {
 		label: "Latency While Uploading",
-		value: (u, v) => format3(v == null ? d2[2][d2[2].length - 1] : v) + "ms",
 		fill: "rgba(0, 0, 255, 0.3)",
-		...series,
+		...seriesOpts,
+		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx); }
 	    },
 	    {
 		label: "Latency When Idle",
-		value: (u, v) => format3(v == null ? d2[3][d2[3].length - 1] : v) + "ms",
 		fill: "rgba(50, 150, 50, 1)",
-		...series,
+		...seriesOpts,
+		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx); }
 	    },
 	],
 	axes: axis,
     };
-    let uplot2 = new uPlot(opts2, d2, document.getElementById("chart2"));
+    chart2 = new uPlot(opts2, d2, document.getElementById("chart2"));
 
     window.addEventListener("resize", e => {
-	uplot.setSize(getSize());
-	uplot2.setSize(getSize());
+	chart1.setSize(getSize());
+	chart2.setSize(getSize());
     });
 
     request(null, onRequest);
