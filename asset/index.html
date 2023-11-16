@@ -12,54 +12,95 @@
 	  max-width: 100%;
 	  overflow-x: hidden;
 	  -webkit-tap-highlight-color:transparent;
+          background-color: white;
+          color: black;
       }
       .settings_content {
 	  display: none;
 	  position: absolute;
 	  min-width: 150px;
-	  background-color: #fff;
-	  box-shadow: 10px 10px 30px 0px #000f;
 	  border-radius: 25px;
 	  padding: 25px;
 	  z-index: 1;
 	  margin-left: 50%;
 	  transform: translateX(-50%);
+          background-color: white;
+          color: black;
+	  box-shadow: 10px 10px 30px 0px #000f;
       }
       .show {
 	  display: block;
       }
+      #dash_outline {
+	  fill: #fff;
+      }
+      @media (prefers-color-scheme: dark) {
+	  body, .settings_content {
+              background-color: black;
+              color: white;
+	  }
+	  .settings_content {
+              background-color: #222;
+              color: white;
+	      box-shadow: inset 0 0 0.5px 1px hsla(0, 0%, 100%, 0.075),
+			  0 0 0 1px hsla(0, 0%, 0%, 0.05),
+			  0 0.3px 0.4px hsla(0, 0%, 0%, 0.02),
+			  0 0.9px 1.5px hsla(0, 0%, 0%, 0.045),
+			  0 3.5px 6px hsla(0, 0%, 0%, 0.09);
+	  }
+	  #dash_outline {
+	      fill: #000;
+	      stroke: #aaa;
+	  }
+	  .st, .bt {
+	      fill: #fff;
+	  }
+	  #progress_band_bg {
+	      fill: #222;
+	  }
+	  #upload_progress_band {
+	      fill: #444;
+	  }
+	  #download_progress_band {
+	      fill: #444;
+	  }
+	  #download_speed_band {
+	      fill: #700;
+	  }
+	  #upload_speed_band {
+	      fill: #008;
+	  }
+	  .inactive_button_circle {
+	      fill: #333;
+	  }
+	  .u-select { /* selection area in char */
+	      background: #fff1;
+	      position: absolute;
+	      pointer-events: none;
+	  }
+      }
     </style>
   </head>
   <body style="margin: 0; padding: 0; font-family: verdana; font-size: 11px;">
-    <div id="dashboard" style="background-image: linear-gradient(#fff, #fff);" width="100%">
+    <div id="dashboard" width="100%">
       <svg viewBox="-105 0 410 100" xmlns="http://www.w3.org/2000/svg" height="150px" style="margin-left: 50%; transform: translateX(-50%);">
 	<style>
-	  .st {
+	  text, tspan {
 	      font-family: verdana;
+	      user-select: none;
+	      -webkit-user-select: none;
+	      -ms-user-select: none;
+	  }
+	  .st {
 	      font-size: 6px;
 	      cursor: default;
-	      user-select: none;
-	      -webkit-user-select: none;
-	      -ms-user-select: none;
-	  }
-	  .bt {
-	      font-family: verdana;
-	      font-size: 15px;
-	      cursor: default;
-	      user-select: none;
-	      -webkit-user-select: none;
-	      -ms-user-select: none;
 	  }
 	  .gt {
-	      font-family: verdana;
 	      font-size: 15px;
 	      cursor: pointer;
-	      user-select: none;
-	      -webkit-user-select: none;
-	      -ms-user-select: none;
 	  }
 	  .button {
-	      filter: drop-shadow(0px 0px 2px #0000);
+	      filter: drop-shadow(0px 0px 2px #fff0);
 	      transition: filter .2s ease;
 	  }
 	  .button:hover {
@@ -76,7 +117,7 @@
 	    <feBlend in="SourceGraphic" in2="blurOut" mode="normal" />
 	  </filter>
 	  <g id="spd">
-	    <path d="M 50 50
+	    <path id="progress_band_bg" d="M 50 50
 		     m -28 28
 		     a 40 40 1 1 1 56 0
 		     l -6 -6
@@ -107,22 +148,22 @@
 		 a 50 50 0 0 0 50 50
 		 v 1
 		 z"
-	      fill="#fff" filter="url(#f3)"/>
+	      id="dash_outline" filter="url(#f3)" transform="translate(0, 1)" />
 
 	<clipPath id="clip_dpb">
-	  <path id="download_progress_band" d=""/>
+	  <path id="download_progress_band_clip_path" d=""/>
 	</clipPath>
 	<clipPath id="clip_upb">
-	  <path id="upload_progress_band" d=""/>
+	  <path id="upload_progress_band_clip_path" d=""/>
 	</clipPath>
 	<clipPath id="clip_dsb">
-	  <path id="download_speed_band" d=""/>
+	  <path id="download_speed_band_clip_path" d=""/>
 	</clipPath>
 	<clipPath id="clip_usb">
-	  <path id="upload_speed_band" d=""/>
+	  <path id="upload_speed_band_clip_path" d=""/>
 	</clipPath>
 
-	<path d="M 45 50
+	<path id="download_progress_band" d="M 45 50
 		 m -28 28
 		 a 40 40 1 1 1 56 0
 		 l 2 2
@@ -157,12 +198,12 @@
 	<use id="download_needle" x="0" y="0" href="#needle" fill="#d00" transform="rotate(-135, 45, 50)" style="visibility: hidden;"/>
 	<use id="upload_needle" x="110" y="0" href="#needle" fill="#00d" transform="rotate(-135, 155, 50)" style="visibility: hidden;"/>
 
-	<text text-anchor="middle" x="45" y="75" class="bt" fill="#d00"><title>Download</title>▼</text>
+	<text text-anchor="middle" x="45" y="75" class="gt" fill="#d00" style="font-size: 15px; cursor: default;"><title>Download</title>▼</text>
 	<text text-anchor="middle" x="45" y="90" class="bt"><title>Download Speed Mbps</title><tspan id="download_mbps"></tspan></text>
 	<text text-anchor="middle" x="70" y="90" class="st">Mbps</text>
 	<text text-anchor="middle" x="45" y="98" class="st"><title>Latency While Downloading</title><tspan id="download_latency"></tspan></text>
 
-	<text text-anchor="middle" x="155" y="75" class="bt" fill="#00d"><title>Upload</title>▲</text>
+	<text text-anchor="middle" x="155" y="75" class="gt" fill="#00d" style="font-size: 15px; cursor: default;"><title>Upload</title>▲</text>
 	<text text-anchor="middle" x="155" y="90" class="bt"><title>Upload Speed Mbps</title><tspan id="upload_mbps"></tspan></text>
 	<text text-anchor="middle" x="180" y="90" class="st">Mbps</text>
 	<text text-anchor="middle" x="155" y="98" class="st"><title>Latency While Uploading</title><tspan id="upload_latency"></tspan></text>
@@ -174,7 +215,7 @@
 	</g>
 	<g id="stop_button" style="visibility: hidden;">
 	  <title>Test Is Running</title>
-	  <circle cx="100" cy="21" r="14" fill="#ddd" />
+	  <circle cx="100" cy="21" r="14" fill="#ddd" class="inactive_button_circle"/>
 	  <path d="M 97 16 l 10 5 l -10 5 z" fill="#fff"/>
 <!-- 	<g id="stop_button" class="button" style="visibility: hidden;" onclick="onClickStop()"> -->
 <!-- 	  <title>Stop Test</title> -->
@@ -183,7 +224,7 @@
 	</g>
 	<g id="disconnected_button" style="visibility: hidden;">
 	  <title>Connection Lost</title>
-	  <circle cx="100" cy="21" r="14" fill="#ddd" />
+	  <circle cx="100" cy="21" r="14" fill="#ddd" class="inactive_button_circle"/>
 	  <circle cx="100" cy="21" r="4" fill="#fff" />
 	</g>
 	<g id="settings_button" class="button" style="cursor:pointer; visibility: visible;" onclick="onClickSettings()">
@@ -193,7 +234,7 @@
 	</g>
 	<g id="disconnected2_button" style="visibility: hidden;">
 	  <title>Connection Lost</title>
-	  <circle cx="100" cy="79" r="14" fill="#ddd" />
+	  <circle cx="100" cy="79" r="14" fill="#ddd" class="inactive_button_circle"/>
 	  <circle cx="100" cy="79" r="4" fill="#fff" />
 	</g>
 	<text text-anchor="middle" x="100" y="52" class="st"><title>Time Till Next Test</title><tspan id="time_till_next"></tspan></text>
@@ -212,7 +253,7 @@
     <div id="chart2"></div>
     <script type="text/javascript">
 function getSize() {
-    let h = Math.max(window.innerHeight / 2 - 150, 200);
+    let h = Math.max(window.innerHeight / 2 - 200, 200);
     return {
 	width: window.innerWidth,
 	height: h,
@@ -341,11 +382,11 @@ function dashboard_set() {
 	var deg = speed_to_gauge_degrees(stateObj.download_mbps);
 	el("download_needle").transform.baseVal[0].setRotate(-135 + deg, 45, 50);
 	el("download_needle").style.visibility = "visible";
-	el("download_speed_band").setAttribute("d", "M45 50" + degrees_to_clip_path(deg));
+	el("download_speed_band_clip_path").setAttribute("d", "M45 50" + degrees_to_clip_path(deg));
     }
     if (stateObj.download_progress) {
 	var deg = stateObj.download_progress * 270 / 100;
-	el("download_progress_band").setAttribute("d", "M45 50" + degrees_to_clip_path(deg));
+	el("download_progress_band_clip_path").setAttribute("d", "M45 50" + degrees_to_clip_path(deg));
     }
     if (stateObj.download_latency) {
 	el("download_latency").textContent = format3(stateObj.download_latency, "ms");
@@ -355,11 +396,11 @@ function dashboard_set() {
 	var deg = speed_to_gauge_degrees(stateObj.upload_mbps);
 	el("upload_needle").transform.baseVal[0].setRotate(-135 + deg, 155, 50);
 	el("upload_needle").style.visibility = "visible";
-	el("upload_speed_band").setAttribute("d", "M155 50" + degrees_to_clip_path(deg));
+	el("upload_speed_band_clip_path").setAttribute("d", "M155 50" + degrees_to_clip_path(deg));
     }
     if (stateObj.upload_progress) {
 	var deg = stateObj.upload_progress * 270 / 100;
-	el("upload_progress_band").setAttribute("d", "M155 50" + degrees_to_clip_path(deg));
+	el("upload_progress_band_clip_path").setAttribute("d", "M155 50" + degrees_to_clip_path(deg));
     }
     if (stateObj.upload_latency) {
 	el("upload_latency").textContent = format3(stateObj.upload_latency, "ms");
@@ -461,6 +502,10 @@ window.onclick = function(e) {
 var chart1 = null;
 var chart2 = null;
 function initSpeedKetchup() {
+    var dark = false;
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+	dark = true;
+    }
     dashboard_set();
 
     let mooSync = uPlot.sync("moo");
@@ -478,25 +523,35 @@ function initSpeedKetchup() {
 
     let axis = [
 	{
+	    stroke: dark ? "#fff" : "#000",
             grid: {
                 show: true,
-                stroke: "rgba(0,0,0,0.2)",
+                stroke: "#8885",
                 width: 1,
             },
+	    ticks: {
+                stroke: "#8885",
+                width: 1,
+	    },
 	},
 	{
+	    stroke: dark ? "#fff" : "#000",
             grid: {
                 show: true,
-                stroke: "rgba(0,0,0,0.2)",
+                stroke: "#8885",
                 width: 1,
             },
+	    ticks: {
+                stroke: "#8885",
+                width: 1,
+	    },
 	},
     ];
     let seriesOpts = {
 	points: {
 	    show: false,
 	    size: 5,
-	    fill: "black",
+	    fill: dark ? "#fff" : "#000",
 	}
     };
     
@@ -607,19 +662,19 @@ function initSpeedKetchup() {
 	series: [
 	    {},
 	    {
-		label: "Latency While Downloading",
-		fill: "rgba(255, 0, 0, 0.3)",
+		label: "Latency While Downloading (ms)",
+		fill: "rgba(255, 0, 0, 0.5)",
 		...seriesOpts,
 		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx); }
 	    },
 	    {
-		label: "Latency While Uploading",
-		fill: "rgba(0, 0, 255, 0.3)",
+		label: "Latency While Uploading (ms)",
+		fill: "rgba(0, 0, 255, 0.5)",
 		...seriesOpts,
 		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx); }
 	    },
 	    {
-		label: "Latency When Idle",
+		label: "Latency When Idle (ms)",
 		fill: "rgba(50, 150, 50, 1)",
 		...seriesOpts,
 		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx); }
