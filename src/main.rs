@@ -170,6 +170,7 @@ struct SpeedTestState {
     gauge_upload_latency: Option<Duration>,
 
     config: SpeedTestConfig,
+    last_result: Option<SpeedTestResult>,
 
     to_conn_senders: HashMap<std::thread::ThreadId, mpsc::Sender<()>>,
     to_main_sender: mpsc::Sender<()>,
@@ -976,6 +977,48 @@ fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
     }
 }
 
+fn iterate_lines_in_file_backwards<CB>(file: &str, mut cb: CB) -> Result<(), ErrorString>
+where CB: FnMut(&[u8]) -> bool {
+    let mut fh = std::fs::File::open(file)?;
+    let size = fh.metadata()?.len() as usize;
+    if size == 0 {
+	return Err(ErrorString("empty file".into()));
+    }
+    const BUF_LEN: usize = 1024 * 4;
+    let mut buf = [0_u8; BUF_LEN * 2];
+    let mut off = size - (size & (BUF_LEN - 1));
+    let mut rlen = size - off;
+    let mut extra = 0;
+    if off == size {
+	off -= BUF_LEN;
+	rlen = BUF_LEN;
+    }
+    loop {
+	std::io::Seek::seek(&mut fh, std::io::SeekFrom::Start(off as u64))?;
+	let mut rbuf = &mut buf[0..rlen];
+	std::io::Read::read_exact(&mut fh, &mut rbuf)?;
+	let start = memmem(rbuf, b"\n").unwrap_or(rlen);
+	for line in buf[(start + 1)..(rlen + extra)].rsplit(|c| *c == b'\n') {
+	    if cb(line) == false {
+		return Ok(());
+	    }
+	}
+
+	if off == 0 {
+	    if start > 0 {
+		cb(&buf[0..start]);
+	    }
+	    break;
+	}
+	buf.copy_within(0..start, BUF_LEN);
+	extra = start;
+	rlen = BUF_LEN;
+	off -= BUF_LEN;
+    }
+    Ok(())
+}
+
+
 const ASSET_INDEX_HTML: &[u8] = include_bytes!("../asset/index.html");
 const ASSET_FAVICON_SVG: &[u8] = include_bytes!("../asset/favicon.svg");
 const ASSET_UPLOT_JS: &[u8] = include_bytes!("../asset/uplot.js");
@@ -1387,6 +1430,16 @@ fn exit(str: &str, code: i32) -> ! {
 }
 
 fn main() {
+    /*
+    match iterate_lines_in_file_backwards("speedketchup-results.csv", |line| {
+	println!("{}", std::str::from_utf8(line).unwrap());
+	true
+    }) {
+	Err(e) => exit(&e.to_string(), -1),
+	Ok(()) => ()
+    }
+    return ();
+     */
     let mut config = SpeedTestConfig {
 	test_interval: 10,
 	store_filename: "speedketchup-results.csv".to_string(),
@@ -1527,6 +1580,7 @@ fn main() {
 	gauge_upload_mbps: None,
 	gauge_upload_latency: None,
 	config: config,
+	last_result: None,
 	to_conn_senders: HashMap::new(),
 	to_main_sender: tx,
 	test_requested: None,
