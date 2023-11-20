@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError, MutexGuard, mpsc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::hash_map::HashMap;
 use std::time::{Duration, Instant};
+use std::ffi::CStr;
 
 /***   Ipv6Addr   ********************************/
 #[derive(Debug)]
@@ -52,6 +53,11 @@ impl std::fmt::Display for ErrorString {
 impl From<&str> for ErrorString {
     fn from(err: &str) -> ErrorString {
         ErrorString(err.to_string())
+    }
+}
+impl From<String> for ErrorString {
+    fn from(err: String) -> ErrorString {
+        ErrorString(err)
     }
 }
 impl From<std::str::Utf8Error> for ErrorString {
@@ -170,7 +176,7 @@ struct SpeedTestState {
     gauge_upload_latency: Option<Duration>,
 
     config: SpeedTestConfig,
-    last_result: Option<SpeedTestResult>,
+//    last_result: Option<SpeedTestResult>,
 
     to_conn_senders: HashMap<std::thread::ThreadId, mpsc::Sender<()>>,
     to_main_sender: mpsc::Sender<()>,
@@ -183,48 +189,131 @@ fn type_of<T>(_: &T) -> &'static str {
     return std::any::type_name::<T>();
 }
 
+macro_rules! cstr {
+    ($($arg:tt)*) => {{
+	unsafe {
+	    CStr::from_bytes_with_nul_unchecked(concat!($($arg)*, "\0").as_bytes())
+	}
+    }};
+}
+
+#[cfg(windows)]
 mod c {
+    #[repr(C)]
+    pub struct TIMEVAL {
+	pub tv_sec: i32,
+	pub tv_usec: i32,
+    }
+    #[repr(C)]
+    #[derive(Clone)]
+    pub struct FD_SET {
+	pub fd_count: u32,
+	pub fd_array: [usize; 64],
+    }
     extern "C" {
-        pub(crate) fn strftime(
+        pub fn strftime(
             s: *mut libc::c_char,
             max: libc::size_t,
             format: *const libc::c_char,
             tm: *const libc::tm,
         ) -> usize;
-        #[cfg(unix)]
-        pub(crate) fn gmtime_r(t: *const libc::c_long, tm: *mut libc::tm);
-        #[cfg(windows)]
-        pub(crate) fn _gmtime64_s(tm: *mut libc::tm, t: *const libc::time_t);
-        #[cfg(unix)]
-	pub(crate) fn timegm(tm: *const libc::tm) -> libc::c_long;
-        #[cfg(windows)]
-	pub(crate) fn _mkgmtime(tm: *const libc::tm) -> libc::time_t;
+        pub fn _gmtime64_s(tm: *mut libc::tm, t: *const libc::time_t);
+	pub fn _mkgmtime(tm: *const libc::tm) -> libc::time_t;
+	pub fn select(
+	    nfds: i32,
+	    readfds: *mut FD_SET,
+	    writefds: *mut FD_SET,
+	    exceptfds: *mut FD_SET,
+	    timeout: *const TIMEVAL,
+	) -> i32;
     }
 }
-//use std::ffi::CString;
-pub fn strftime_gmt(format: &str, epoch: i64) -> String {
-    let now = unsafe {
-	let mut now: libc::tm = std::mem::zeroed();
-        #[cfg(unix)]
-        c::gmtime_r(&(epoch as libc::c_long), &mut now);
-        #[cfg(windows)]
-        c::_gmtime64_s(&mut now, &epoch);
-	now
-    };
-    let f = std::ffi::CString::new(format).unwrap();
-    let buf = [0_u8; 100];
-    let l: usize = unsafe { c::strftime(buf.as_ptr() as _, buf.len(), f.as_ptr() as *const _, &now) };
-    std::string::String::from_utf8_lossy(&buf[..l]).to_string()
+
+fn strftime_gmt(format: &CStr, epoch: i64) -> String {
+    let mut buf = Vec::with_capacity(100);
+    unsafe {
+	let mut now: libc::tm = std::mem::zeroed(); 
+        #[cfg(unix)] {
+            libc::gmtime_r(&(epoch as libc::c_long), &mut now);
+	    buf.set_len(libc::strftime(buf.as_ptr() as _, buf.capacity(), format.as_ptr() as *const _, &now));
+	}
+        #[cfg(windows)] {
+            c::_gmtime64_s(&mut now, &epoch);
+	    buf.set_len(c::strftime(buf.as_ptr() as _, buf.capacity(), format.as_ptr() as *const _, &now));
+	}
+	std::string::String::from_utf8_unchecked(buf)
+    }
+}
+
+enum WaitSocketOp {
+    Read,
+    Write
+}
+fn wait_socket(stream: &std::net::TcpStream, timeout: Duration, op: WaitSocketOp) -> Result<(), ErrorString> {
+    #[cfg(unix)]
+    {
+        let mut pollfd = libc::pollfd {
+	    fd: std::os::unix::io::AsRawFd::as_raw_fd(stream),
+	    events: match op {
+		WaitSocketOp::Read => libc::POLLIN,
+		WaitSocketOp::Write => libc::POLLOUT,
+	    },
+	    revents: 0
+	};
+        let now = Instant::now();
+	loop {
+	    let to = timeout.checked_sub(now.elapsed()).ok_or("timeout")?;
+            match unsafe { libc::poll(&mut pollfd, 1, to.as_millis() as libc::c_int) } {
+                -1 => {
+                    let err = std::io::Error::last_os_error();
+		    if err.kind() != std::io::ErrorKind::Interrupted {
+                        return Err(err.into());
+                    }
+                }
+		0 => return Err("timeout".into()),
+		_ => break,
+	    }
+	}
+	Ok(())
+    }
+    #[cfg(windows)]
+    {
+	let mut fds: c::FD_SET = {
+            let mut fds = c::FD_SET{ fd_count: 1, fd_array: [0; 64] };
+            fds.fd_array[0] = std::os::windows::io::AsRawSocket::as_raw_socket(stream) as usize;
+            fds
+	};
+	let mut errorfds: c::FD_SET = fds.clone();
+
+	let mut readfdsp: *mut c::FD_SET = std::ptr::null_mut();
+	let mut writefdsp: *mut c::FD_SET = std::ptr::null_mut();
+	match op {
+	    WaitSocketOp::Read => readfdsp = &mut fds,
+	    WaitSocketOp::Write => writefdsp = &mut fds,
+	}
+	let to = c::TIMEVAL{ tv_sec: timeout.as_secs() as i32, tv_usec: timeout.subsec_micros() as i32 };
+
+        let result = unsafe {
+            c::select(1, readfdsp, writefdsp, &mut errorfds, &to)
+        };
+	if result == -1 {
+	    return Err(std::io::Error::last_os_error().into());
+	}
+	if fds.fd_count == 0 {
+	    return Err("timeout".into());
+	}
+	Ok(())
+    }
 }
 
 fn timestr() -> String {
     let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
-    format!("{}", strftime_gmt("%Y.%m.%d-%H:%M:%S", d.as_secs() as i64))
+    format!("{}", strftime_gmt(cstr!("%Y.%m.%d-%H:%M:%S"), d.as_secs() as i64))
 }
 
 fn timestr_millis() -> String {
     let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
-    format!("{}.{:0>3}", strftime_gmt("%Y.%m.%d-%H:%M:%S", d.as_secs() as i64), d.subsec_millis())
+    format!("{}.{:0>3}", strftime_gmt(cstr!("%Y.%m.%d-%H:%M:%S"), d.as_secs() as i64), d.subsec_millis())
 }
 
 fn parse_timestr(str: &str) -> Result<u32, ErrorString> {
@@ -243,7 +332,7 @@ fn parse_timestr(str: &str) -> Result<u32, ErrorString> {
 	tm.tm_min = time[1].parse()?;
 	tm.tm_sec = time[2].parse()?;
         #[cfg(unix)]
-        let t = c::timegm(&tm);
+        let t = libc::timegm(&mut tm);
         #[cfg(windows)]
         let t = c::_mkgmtime(&tm);
 	t as u32
@@ -367,7 +456,7 @@ fn http_request<READ, WRITE>(
     send_data_size: usize,
     mut read_cb: Option<READ>,
     mut write_cb: Option<WRITE>)
-    -> Result<usize, ErrorString>
+    -> Result<(), ErrorString>
 where
     READ: FnMut(&[u8]) -> (),
     WRITE: FnMut(usize) -> ()
@@ -375,13 +464,16 @@ where
     let now = Instant::now();
     let sock_addr = match std::net::ToSocketAddrs::to_socket_addrs(host) {
 	Ok(x) => x,
-	Err(_) => std::net::ToSocketAddrs::to_socket_addrs(&(host, 80))?
-    }.next().ok_or("no addr")?;
+	Err(_) => std::net::ToSocketAddrs::to_socket_addrs(&(host, 80))
+	    .map_err(|e| format!("http_request: to_socket_addrs {e}"))?
+    }.next().ok_or("htpp_request: no addr")?;
 //    pr!("http_request {host} {path} {method} {sock_addr} {:?} {send_data_size}", duration);
-    let mut tcp_stream = std::net::TcpStream::connect_timeout(&sock_addr, duration)?;
+    let mut tcp_stream = std::net::TcpStream::connect_timeout(&sock_addr, duration)
+	.map_err(|e| format!("http_request: connect {e}"))?;
+    tcp_stream.set_nonblocking(true)?;
 
-    let mut timeout = Some(duration.checked_sub(now.elapsed()).ok_or("connect too long")?);
-    tcp_stream.set_write_timeout(timeout)?;
+    let mut timeout = duration.checked_sub(now.elapsed())
+	.ok_or("http_request: connect too long")?;
 //    pr!("connect done");
     let req = format!("{method} {path} HTTP/1.1\r
 Host: {host}\r
@@ -390,38 +482,46 @@ Accept: */*\r
 Connection: close\r
 {extra_headers}\r
 ");
-//    use std::io::prelude::Write;
-//    tcp_stream.write(req.as_bytes())?;
-    std::io::Write::write_all(&mut tcp_stream, req.as_bytes())?;
-    let mut buf = [0_u8; 1024 * 8];
+
+    // send request
     let mut bytes_written = 0;
+    while bytes_written < req.as_bytes().len() {
+	wait_socket(&tcp_stream, timeout, WaitSocketOp::Write)
+	    .map_err(|e| format!("http_request: wait_socket to send request {e}"))?;
+	bytes_written += match std::io::Write::write(&mut tcp_stream, req.as_bytes()) {
+	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => 0,
+	    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
+	    Err(err) => return Err(format!("http_request: send request: {err}").into()),
+	    Ok(ret) => {
+		if ret == 0 {
+		    return Err("http_request: send request: closed".into());
+		}
+		ret
+	    }
+	}
+    }
+
 //    pr!("write request done");
+    let mut buf = [0_u8; 1024 * 8];
+    bytes_written = 0;
 
     // send post data
-    loop {
-	if bytes_written >= send_data_size {
-	    break;
-	}
-	timeout = duration.checked_sub(now.elapsed());
-	if timeout.is_none() {
-//	    pr!("write timeout");
-	    break;
-	}
-	tcp_stream.set_write_timeout(timeout)?;
+    while bytes_written < send_data_size {
+	timeout = duration.checked_sub(now.elapsed())
+	    .ok_or("http_request: send post data: timeout")?;
+	wait_socket(&tcp_stream, timeout, WaitSocketOp::Write)
+	    .map_err(|e| format!("http_request: wait_socket to send post data {e}"))?;
 	let mut remain = send_data_size - bytes_written;
 	if remain > buf.len() {
 	    remain = buf.len();
 	}
 	match std::io::Write::write(&mut tcp_stream, &buf[0..remain]) {
 	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-	    Err(_err) => {
-//		pr!("write {_err}");
-		break
-	    }
+	    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+	    Err(err) => return Err(format!("http_request: send post data: {err}").into()),
 	    Ok(ret) => {
 		if ret == 0 {
-//		    pr!("write done");
-		    break
+		    return Err("http_request: send post data: closed".into());
 		}
 //		pr!("write {ret}");
 		bytes_written += ret;
@@ -435,14 +535,12 @@ Connection: close\r
 
     // receive response
     loop {
-	timeout = duration.checked_sub(now.elapsed());
-	if timeout.is_none() {
-//	    pr!("read timeout");
-	    break;
-	}
-	tcp_stream.set_read_timeout(timeout)?;
+	timeout = duration.checked_sub(now.elapsed()).ok_or("http_request: receive response timeout")?;
+	wait_socket(&tcp_stream, timeout, WaitSocketOp::Read)
+	    .map_err(|e| format!("http_request: wait_socket to receive response {e}"))?;
 	match std::io::Read::read(&mut tcp_stream, &mut buf) {
 	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+	    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
 	    Err(_err) => {
 //		pr!("read {_err}");
 		break
@@ -460,7 +558,7 @@ Connection: close\r
 	}
     }
 //    pr!("read");
-    Ok(bytes_written)
+    Ok(())
 }
 
 fn http_get(host: &str, path: &str) -> Result<Vec<u8>, ErrorString> {
@@ -468,11 +566,11 @@ fn http_get(host: &str, path: &str) -> Result<Vec<u8>, ErrorString> {
     let mut resp: Vec<u8> = Vec::new();
     http_request(host, path, "GET", "", dur, 0, Some(|buf: &[u8]| {
 	resp.extend_from_slice(buf);
-    }), None::<fn(usize)>)?;
+    }), None::<fn(usize)>).map_err(|e| format!("http_get {host} {path}: {e}"))?;
     Ok(resp)
 }
 fn http_status_code(resp: &[u8]) -> Result<u32, ErrorString> {
-    let codestr = resp.split(|c| *c == b' ').nth(1).ok_or("no status code")?;
+    let codestr = resp.split(|c| *c == b' ').nth(1).ok_or("http no status code")?;
     Ok(std::str::from_utf8(codestr)?.parse::<u32>()?)
 }
 fn http_headers<CB>(resp: &[u8], mut cb: CB) where
@@ -583,6 +681,7 @@ fn test_download(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress:
 //	pr!("download timeout: {:?}", timeout);
 	match timeout {
 	    None => break,
+	    Some(t) if t < Duration::from_millis(1) => break,
 	    Some(t) => {
 		let size = sizes[i];
 		let path = format!("speedtest/random{size}x{size}.jpg");
@@ -590,7 +689,7 @@ fn test_download(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress:
 		    progress.fetch_add(buf.len(), Ordering::Relaxed);
 		    bytes += buf.len()
 		}), None::<fn(usize)>) {
-		    Err(err) => pr!("http error: {err}"),
+		    Err(err) => pr!("downlaod {path}: {err}"),
 		    Ok(_) => ()
 		}
 	    }
@@ -611,15 +710,16 @@ fn test_upload(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress: &
 //	pr!("upload timeout: {:?}", timeout);
 	match timeout {
 	    None => break,
+	    Some(t) if t < Duration::from_millis(1) => break,
 	    Some(t) => {
 		let size = sizes[i];
 		let path = "speedtest/upload.php";
-		bytes += match http_request(host_str, &path, "POST", &format!("Content-Length: {size}\r\n"), t, size as usize, None::<fn(&[u8])>, Some(|b: usize| {
+		match http_request(host_str, &path, "POST", &format!("Content-Length: {size}\r\n"), t, size as usize, None::<fn(&[u8])>, Some(|b: usize| {
 		    progress.fetch_add(b, Ordering::Relaxed);
+		    bytes += b;
 		})) {
 		    Err(err) => {
-			pr!("http error: {err}");
-			0
+			pr!("upload {size}: {err}");
 		    }
 		    Ok(x) => x
 		}
@@ -728,11 +828,15 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
     pr!("speedtest");
     set_status(state, "get provider info")?;
     let cfg = state.lock()?.config.clone();
-    let resp = http_get_follow_redirects("www.speedtest.net", "/speedtest-config.php")?;
+    let resp = http_get_follow_redirects("www.speedtest.net", "/speedtest-config.php")
+	.map_err(|e| format!("get config: {e}"))?;
 //    pr!("status:{} body:{}", http_status_code(&resp)?, http_body(&resp)?);
-    let config_xml = http_body(&resp)?;
-//    pr!("config_xml: {}", config_xml);
-    let config = roxmltree::Document::parse(&std::str::from_utf8(&config_xml)?)?;
+    let config_xml = http_body(&resp).map_err(|e| format!("config no body: {e}"))?;
+    //    pr!("config_xml: {}", config_xml);
+    let config_body = std::str::from_utf8(&config_xml)
+	.map_err(|e| format!("config body bad utf8: {e}"))?;
+    let config = roxmltree::Document::parse(&config_body)
+	.map_err(|e| format!("config bad xml: {e}"))?;
     pr!("config_xml.len(): {:?}", config_xml.len());
 
     let server_config_node = config.descendants()
@@ -743,10 +847,10 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 //        .ok_or("no download")?;
     let upload_node = config.descendants()
         .find(|n| n.has_tag_name("upload"))
-        .ok_or("no upload")?;
+        .ok_or("no upload config")?;
     let client_node = config.descendants()
         .find(|n| n.has_tag_name("client"))
-        .ok_or("no client")?;
+        .ok_or("no client info")?;
 
     let ignore_servers: Vec<u32> = server_config_node
         .attribute("ignoreids")
@@ -958,7 +1062,7 @@ fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
 			 opt_float_to_str(r.download), opt_float_to_str(r.upload),
 			 r.client_public_ip, r.client_isp,
 			 r.server.descr, r.server.host),
-	Err(e) => format!("{},,,,,,,,,,{e}\n", timestr()),
+	Err(e) => format!("{},,,,,,,,,,\"{e}\"\n", timestr()),
     };
     let path = std::path::Path::new(file);
     if path.exists() == false {
@@ -977,6 +1081,7 @@ fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
     }
 }
 
+#[allow(dead_code)]
 fn iterate_lines_in_file_backwards<CB>(file: &str, mut cb: CB) -> Result<(), ErrorString>
 where CB: FnMut(&[u8]) -> bool {
     let mut fh = std::fs::File::open(file)?;
@@ -1229,6 +1334,7 @@ Content-Length: {}\r
 	stream.set_write_timeout(timeout)?;
 	match std::io::Write::write(&mut stream, &resp[bytes_written..]) {
 	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+	    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
 	    Err(_err) => {
 		pr!("write {_err}");
 		break
@@ -1256,6 +1362,7 @@ Content-Length: {}\r
 	    let len = std::cmp::min(additional_bytes - bytes_written, buf.len());
 	    match std::io::Write::write(&mut stream, &buf[0..len]) {
 		Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+		Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
 		Err(_err) => break,
 		Ok(ret) => {
 		    if ret == 0 {
@@ -1295,6 +1402,7 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 	    false => std::io::Read::read(&mut stream, &mut drop_buf)
 	} {
 	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+	    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
 	    Err(_e) => {
 //		pr!("read {e}");
 		break
@@ -1580,7 +1688,7 @@ fn main() {
 	gauge_upload_mbps: None,
 	gauge_upload_latency: None,
 	config: config,
-	last_result: None,
+//	last_result: None,
 	to_conn_senders: HashMap::new(),
 	to_main_sender: tx,
 	test_requested: None,

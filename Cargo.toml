@@ -2,7 +2,7 @@
 name = "speedketchup"
 version = "0.1.0"
 authors = ["Gatis Peisenieks <peisenieks@gmail.com>"]
-license = "MIT"
+license = "GPLv2"
 edition = "2021"
 
 [dependencies]
@@ -10,8 +10,6 @@ edition = "2021"
 #backtrace = "0.3.69"
 libc = { version = "0.2", default-features = false }
 roxmltree = "0.18.1"
-#bstr = { version = "1.7.0", default-features = false, features = ["std"] }
-#ureq = { version = "2.8.0", default-features = false, features = ["tls"] }
 
 [profile.dev]
 #panic = "abort"
