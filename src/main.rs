@@ -136,18 +136,17 @@ struct SpeedTestServer {
 
 #[derive(Debug)]
 struct SpeedTestResult {
-//    timestamp: u32,
+    timestamp: Option<u32>,
     latency_idle: Option<Duration>,
     latency_download: Option<Duration>,
     latency_upload: Option<Duration>,
     download: Option<f32>,
     upload: Option<f32>,
-    client_public_ip: Ipv6Addr,
+    client_public_ip: Option<Ipv6Addr>,
     client_isp: String,
-    server: SpeedTestServer,
-//    server_id: u32,
-//    server_descr: String,
-//    server_host: String,
+    server_descr: String,
+    server_host: String,
+    error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -306,13 +305,16 @@ fn wait_socket(stream: &std::net::TcpStream, timeout: Duration, op: WaitSocketOp
     }
 }
 
-fn timestr() -> String {
-    let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+fn timestr(d: Duration) -> String {
     format!("{}", strftime_gmt(cstr!("%Y.%m.%d-%H:%M:%S"), d.as_secs() as i64))
 }
 
+fn timestr_now() -> String {
+    timestr(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default())
+}
+
 fn timestr_millis() -> String {
-    let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     format!("{}.{:0>3}", strftime_gmt(cstr!("%Y.%m.%d-%H:%M:%S"), d.as_secs() as i64), d.subsec_millis())
 }
 
@@ -1019,14 +1021,17 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
     }
 
     Ok(SpeedTestResult {
+	timestamp: Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as u32),
 	latency_idle: server.latency,
 	latency_download: download_latency,
 	latency_upload: upload_latency,
 	download: download_mbps,
 	upload: upload_mbps,
-	client_public_ip: client_ip,
+	client_public_ip: Some(client_ip),
 	client_isp: client_isp,
-	server: server.clone(),
+	server_descr: server.descr.clone(),
+	server_host: server.host.clone(),
+	error: None,
     })
 }
 
@@ -1051,18 +1056,36 @@ fn opt_float_to_str(n: Option<f32>) -> String {
     }
 }
 
+fn opt_str_to_str(n: &Option<String>) -> String {
+    match n {
+	None => String::new(),
+	Some(n) => n.to_string(),
+    }
+}
+
+fn opt_ipv6addr_to_str(n: &Option<Ipv6Addr>) -> String {
+    match n {
+	None => String::new(),
+	Some(n) => n.to_string(),
+    }
+}
+
 const CSV_COLS: &str = "Timestamp,LatencyIdle(ms),LatencyDownload(ms),LatencyUpload(ms),Download(Mbps),Upload(Mbps),ClientPublicIP,ClientISP,ServerDescr,ServerHost,Error\n";
 fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
     let str = match result {
-	Ok(r) => format!("{},{},{},{},{},{},{},\"{}\",\"{}\",{},\n",
-			 timestr(),
+	Ok(r) => format!("{},{},{},{},{},{},{},\"{}\",\"{}\",{},{}\n",
+			 timestr(Duration::from_secs(r.timestamp.unwrap_or_default() as u64)),
 			 dur_to_str(r.latency_idle),
 			 dur_to_str(r.latency_download),
 			 dur_to_str(r.latency_upload),
-			 opt_float_to_str(r.download), opt_float_to_str(r.upload),
-			 r.client_public_ip, r.client_isp,
-			 r.server.descr, r.server.host),
-	Err(e) => format!("{},,,,,,,,,,\"{e}\"\n", timestr()),
+			 opt_float_to_str(r.download),
+			 opt_float_to_str(r.upload),
+			 opt_ipv6addr_to_str(&r.client_public_ip),
+			 r.client_isp,
+			 r.server_descr,
+			 r.server_host,
+			 opt_str_to_str(&r.error)),
+	Err(e) => format!("{},,,,,,,,,,\"{e}\"\n", timestr_now()),
     };
     let path = std::path::Path::new(file);
     if path.exists() == false {
@@ -1718,7 +1741,13 @@ fn main() {
 	    Ok(r) => {
 //		pr!("result: {:#?}", r);
 		pr!("speedtest latency:idle-{}ms/dl-{}ms/ul-{}ms download:{}Mbps upload:{}Mbps client_ip:{} isp:{} server:{}",
-		    dur_to_str(r.latency_idle), dur_to_str(r.latency_download), dur_to_str(r.latency_upload), opt_float_to_str(r.download), opt_float_to_str(r.upload), r.client_public_ip, r.client_isp, r.server.host);
+		    dur_to_str(r.latency_idle),
+		    dur_to_str(r.latency_download),
+		    dur_to_str(r.latency_upload),
+		    opt_float_to_str(r.download),
+		    opt_float_to_str(r.upload),
+		    opt_ipv6addr_to_str(&r.client_public_ip),
+		    r.client_isp, r.server_host);
 	    }
 	};
 	let mut filename = String::new();
