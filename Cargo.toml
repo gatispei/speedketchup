@@ -9,7 +9,7 @@ edition = "2021"
 #libc-strftime = "0.2.0"
 #backtrace = "0.3.69"
 libc = { version = "0.2", default-features = false }
-roxmltree = "0.18.1"
+roxmltree = { version = "0.18.1", default-features = false }
 
 [profile.dev]
 #panic = "abort"

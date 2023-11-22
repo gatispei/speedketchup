@@ -17,9 +17,11 @@ linker = "aarch64-linux-gnu-gcc"
 
 [target.mips-unknown-linux-musl]
 linker = "mips-linux-gnu-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.mipsel-unknown-linux-musl]
 linker = "mipsel-linux-gnu-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.x86_64-pc-windows-gnu]
 
