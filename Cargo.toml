@@ -19,6 +19,6 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
-strip = true
+#strip = true
 
 #lipo -create -output universal_app x86_app arm_app

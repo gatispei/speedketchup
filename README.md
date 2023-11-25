@@ -13,12 +13,12 @@ You can use speedketchup for one-off test or keep it running continuously to spo
 Prebuilt executables for some platforms:
 | platform | executable | [upx](https://upx.github.io/)-compressed executable |
 |-|-|-|
-|linux x86_64|[395k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64)|[174k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx)|
-|linux i686|[382k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-i686)|[180k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-i686-upx)|
-|linux aarch64|[353k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-aarch64)|[168k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-aarch64-upx)|
-|linux arm|[398k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm)|[174k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm-upx)|
+|linux x86_64|[395k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64)|[173k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx)|
+|linux i686|[382k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-i686)|[181k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-i686-upx)|
+|linux aarch64|[353k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-aarch64)|[201k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-aarch64-upx)|
+|linux arm|[398k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm)|[175k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm-upx)|
 |linux mips|[1035k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-mips)|[360k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-mips-upx)|
-|linux mipsel|[1035k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-mipsel)|[366k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-mipsel-upx)|
+|linux mipsel|[1035k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-mipsel)|[367k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-mipsel-upx)|
 |windows x86_64|[392k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64.exe)|[165k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx.exe)|
 |macos universal (x86_64 + aarch64)|[698k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-macos)|
 
