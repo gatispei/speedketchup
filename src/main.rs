@@ -163,6 +163,163 @@ struct SpeedTestConfig {
     upload_connections: u32,
 }
 
+impl SpeedTestConfig {
+    fn from_env_and_args() -> Self {
+        let mut config = Self::default();
+        config.load_from_env();
+        config.load_from_args();
+        config
+    }
+
+    fn load_from_env(&mut self) {
+        if let Ok(val) = std::env::var("test_interval") {
+            if let Ok(parsed) = val.parse() {
+                self.test_interval = parsed;
+            }
+        }
+        if let Ok(val) = std::env::var("store_filename") {
+            self.store_filename = val;
+        }
+        if let Ok(val) = std::env::var("listen_port") {
+            if let Ok(parsed) = val.parse() {
+                self.listen_port = parsed;
+            }
+        }
+        if let Ok(val) = std::env::var("listen_address") {
+            self.listen_address = val;
+        }
+        if let Ok(val) = std::env::var("server_host") {
+            self.server_host = Some(val);
+        }
+        if let Ok(val) = std::env::var("download_duration") {
+            if let Ok(parsed) = val.parse() {
+                self.download_duration = parsed;
+            }
+        }
+        if let Ok(val) = std::env::var("download_connections") {
+            if let Ok(parsed) = val.parse() {
+                self.download_connections = parsed;
+            }
+        }
+        if let Ok(val) = std::env::var("upload_duration") {
+            if let Ok(parsed) = val.parse() {
+                self.upload_duration = parsed;
+            }
+        }
+        if let Ok(val) = std::env::var("upload_connections") {
+            if let Ok(parsed) = val.parse() {
+                self.upload_connections = parsed;
+            }
+        }
+    }
+
+    fn load_from_args(&mut self) {
+        let args = std::env::args().collect::<Vec<_>>();
+        let mut it = args.iter();
+        it.next();
+        while let Some(arg) = it.next() {
+            match arg.as_str() {
+                "-h" | "--help" => exit(HELP, 0),
+                "-v" | "--version" => exit(PKG_VERSION, 0),
+                "-i" | "--interval" => {
+                    self.test_interval = match it.next() {
+                        Some(x) => match x.parse() {
+                            Ok(i) => i,
+                            Err(_) => exit("bad interval", -1),
+                        },
+                        None => exit("no interval given", -1),
+                    }
+                },
+                "-f" | "--file" => {
+                    self.store_filename = match it.next() {
+                        Some(x) => x.clone(),
+                        None => exit("no filename given", -1),
+                    }
+                },
+                "-a" | "--address" => {
+                    self.listen_address = match it.next() {
+                        Some(x) => x.clone(),
+                        None => exit("no address given", -1),
+                    }
+                },
+                "-p" | "--port" => {
+                    self.listen_port = match it.next() {
+                        Some(x) => match x.parse() {
+                            Ok(i) => i,
+                            Err(_) => exit("bad port", -1),
+                        },
+                        None => exit("no port given", -1),
+                    }
+                },
+                "-s" | "--server" => {
+                    self.server_host = match it.next() {
+                        Some(x) => {
+                            match x.find(":") {
+                                Some(_off) => Some(x.to_string()),
+                                None => Some(format!("{x}:8080"))
+                            }
+                        }
+                        None => exit("no server given", -1),
+                    }
+                },
+                "-dd" | "--download-duration" => {
+                    self.download_duration = match it.next() {
+                        Some(x) => match x.parse() {
+                            Ok(i) => i,
+                            Err(_) => exit("bad duration", -1),
+                        },
+                        None => exit("no duration given", -1),
+                    }
+                },
+                "-dc" | "--download-connections" => {
+                    self.download_connections = match it.next() {
+                        Some(x) => match x.parse() {
+                            Ok(i) => i,
+                            Err(_) => exit("bad number", -1),
+                        },
+                        None => exit("no number given", -1),
+                    }
+                },
+                "-ud" | "--upload-duration" => {
+                    self.upload_duration = match it.next() {
+                        Some(x) => match x.parse() {
+                            Ok(i) => i,
+                            Err(_) => exit("bad duration", -1),
+                        },
+                        None => exit("no duration given", -1),
+                    }
+                },
+                "-uc" | "--upload-connections" => {
+                    self.upload_connections = match it.next() {
+                        Some(x) => match x.parse() {
+                            Ok(i) => i,
+                            Err(_) => exit("bad number", -1),
+                        },
+                        None => exit("no number given", -1),
+                    }
+                },
+                _ => exit(&format!("unknown arg '{}'", arg), -1),
+            }
+        }
+    }
+}
+
+impl Default for SpeedTestConfig {
+    fn default() -> Self {
+        Self {
+            test_interval: 10,
+            store_filename: "speedketchup-results.csv".to_string(),
+            listen_port: 8080,
+            listen_address: "127.0.0.1".to_string(),
+            server_host: None,
+            download_duration: 10,
+            download_connections: 8,
+            upload_duration: 10,
+            upload_connections: 8,
+        }
+    }
+}
+
 struct SpeedTestState {
     status: String,
     idle_until: Option<Instant>,
@@ -1571,105 +1728,7 @@ fn main() {
     }
     return ();
      */
-    let mut config = SpeedTestConfig {
-	test_interval: 10,
-	store_filename: "speedketchup-results.csv".to_string(),
-	listen_port: 8080,
-	listen_address: "127.0.0.1".to_string(),
-	server_host: None,
-	download_duration: 10,
-	download_connections: 8,
-	upload_duration: 10,
-	upload_connections: 8,
-    };
-
-    let args = std::env::args().collect::<Vec<_>>();
-    let mut it = args.iter();
-    it.next();
-    while let Some(arg) = it.next() {
-	match arg.as_str() {
-	    "-h" | "--help" => exit(HELP, 0),
-	    "-v" | "--version" => exit(PKG_VERSION, 0),
-	    "-i" | "--interval" => {
-		config.test_interval = match it.next() {
-		    Some(x) => match x.parse() {
-			Ok(i) => i,
-			Err(_) => exit("bad interval", -1),
-		    },
-		    None => exit("no interval given", -1),
-		}
-	    },
-	    "-f" | "--file" => {
-		config.store_filename = match it.next() {
-		    Some(x) => x.clone(),
-		    None => exit("no filename given", -1),
-		}
-	    },
-	    "-a" | "--address" => {
-		config.listen_address = match it.next() {
-		    Some(x) => x.clone(),
-		    None => exit("no address given", -1),
-		}
-	    },
-	    "-p" | "--port" => {
-		config.listen_port = match it.next() {
-		    Some(x) => match x.parse() {
-			Ok(i) => i,
-			Err(_) => exit("bad port", -1),
-		    },
-		    None => exit("no port given", -1),
-		}
-	    },
-	    "-s" | "--server" => {
-		config.server_host = match it.next() {
-		    Some(x) => {
-			match x.find(":") {
-			    Some(_off) => Some(x.to_string()),
-			    None => Some(format!("{x}:8080"))
-			}
-		    }
-		    None => exit("no server given", -1),
-		}
-	    },
-	    "-dd" | "--download-duration" => {
-		config.download_duration = match it.next() {
-		    Some(x) => match x.parse() {
-			Ok(i) => i,
-			Err(_) => exit("bad duration", -1),
-		    },
-		    None => exit("no duration given", -1),
-		}
-	    },
-	    "-dc" | "--download-connections" => {
-		config.download_connections = match it.next() {
-		    Some(x) => match x.parse() {
-			Ok(i) => i,
-			Err(_) => exit("bad number", -1),
-		    },
-		    None => exit("no number given", -1),
-		}
-	    },
-	    "-ud" | "--upload-duration" => {
-		config.upload_duration = match it.next() {
-		    Some(x) => match x.parse() {
-			Ok(i) => i,
-			Err(_) => exit("bad duration", -1),
-		    },
-		    None => exit("no duration given", -1),
-		}
-	    },
-	    "-uc" | "--upload-connections" => {
-		config.upload_connections = match it.next() {
-		    Some(x) => match x.parse() {
-			Ok(i) => i,
-			Err(_) => exit("bad number", -1),
-		    },
-		    None => exit("no number given", -1),
-		}
-	    },
-	    _ => exit(&format!("unknown arg '{}'", arg), -1),
-	}
-    }
+    let config = SpeedTestConfig::from_env_and_args();
 
     std::env::set_var("RUST_BACKTRACE", "1");
     println!("speedketchup parameters (run with '-h' to see options):");

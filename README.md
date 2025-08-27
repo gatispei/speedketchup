@@ -22,6 +22,58 @@ Prebuilt executables for some platforms:
 |windows x86_64|[392k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64.exe)|[165k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx.exe)|
 |macos universal (x86_64 + aarch64)|[698k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-macos)|
 
+### Docker Container
+
+Multi-architecture container images available on DockerHub:
+
+```bash
+# Run with default settings (web UI on port 8080)
+docker run -p 8080:8080 antonsmt/speedketchup
+
+# Run with custom interval and bind to all interfaces
+docker run -p 8080:8080 antonsmt/speedketchup -i 5 -a 0.0.0.0
+
+# Run with persistent data storage
+docker run -p 8080:8080 -v $(pwd)/data:/data antonsmt/speedketchup -f /data/results.csv
+```
+
+To run on MikroTik devices - add veth interface and setup network as per MikroTik [documentation](https://help.mikrotik.com/docs/spaces/ROS/pages/84901929/Container)
+
+#### Environment Variables
+
+Environment variables can be used instead of command line options (CLI options will override env vars):
+
+| Environment Variable | CLI Option | Default | Description |
+|---------------------|------------|---------|-------------|
+| `test_interval` | `-i/--interval` | `10` | Test interval in minutes |
+| `store_filename` | `-f/--file` | `speedketchup-results.csv` | File to store results |
+| `listen_address` | `-a/--address` | `127.0.0.1` | Listen address (use `0.0.0.0` for all) |
+| `listen_port` | `-p/--port` | `8080` | Listen port |
+| `server_host` | `-s/--server` | auto-select | Speedtest server host[:port] |
+| `download_duration` | `-dd/--download-duration` | `10` | Download test duration (seconds) |
+| `upload_duration` | `-ud/--upload-duration` | `10` | Upload test duration (seconds) |
+| `download_connections` | `-dc/--download-connections` | `8` | Download parallel connections |
+| `upload_connections` | `-uc/--upload-connections` | `8` | Upload parallel connections |
+
+```bash
+# Example with environment variables
+docker run -p 8080:8080 \
+  -e test_interval=5 \
+  -e listen_address=0.0.0.0 \
+  -e store_filename=/data/results.csv \
+  -v $(pwd)/data:/data \
+  antonsmt/speedketchup
+```
+
+For MikroTik RouterOS containers:
+```RouterOS
+/container envs add list=speedketchup key=test_interval value=5
+/container envs add list=speedketchup key=listen_address value=0.0.0.0
+/container envs add list=speedketchup key=store_filename value=results.csv
+```
+Supported container architectures: `amd64`, `arm64`, `arm/v7`
+
+
 ### Builtin web server
 ![speedketchup webserver](https://github.com/gatispei/speedketchup-files/blob/main/img/ketchup.png "SpeedKetchup webserver")
 
@@ -35,26 +87,6 @@ Prebuilt executables for some platforms:
 - all web assets are included in the program binary
 - linux version statically linked with [musl](https://musl.libc.org/) - not dependent on system [libc](https://en.wikipedia.org/wiki/C_standard_library), essentially a single binary container
 - acts as a speedtest server itself. Not registered with official speedtest.net, but can be passed as speedtest server to supporting clients
-
-### Command Line
-
-<pre>
-usage: speedketchup [options]
-	-h|--help: print this
-	-v|--version: print version
-	-i|--interval &ltminutes&gt: test interval in minutes, 10 by default
-	-f|--file &ltfilename&gt: file to store test results in, speedketchup-results.csv by default
-	-a|--address &ltlocal_addr&gt: address to listen on for incoming connections, 127.0.0.1 by default
-		local_addr: use 0.0.0.0 to accept connections on all addresses
-	-p|--port &ltport&gt: port to listen on for incoming connections, 8080 by default
-	-s|--server &ltserver_host[:server_port]&gt: speedtest server to use, avoids automatic server selection if specified
-		server_host: domain_name|ipv4_addr|ipv6_addr
-		server_port: port number, 8080 by default
-	-dd|--download-duration &ltseconds&gt: how long to test download speed, 0 disables test, 10 seconds by default
-	-ud|--upload-duration &ltseconds&gt: how long to test upload speed, 0 disables test, 10 seconds by default
-	-dc|--download-connections &ltnumber&gt: how many parallel connections to make for download, 8 connections by default
-	-uc|--uplaod-connections &ltnumber&gt: how many parallel connections to make for upload, 8 connections by default
-</pre>
 
 ### Alternatives
 
