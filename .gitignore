@@ -4,3 +4,4 @@ speedketchup-results.csv
 ._*
 bin
 target-linux
+.env

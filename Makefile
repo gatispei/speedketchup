@@ -3,6 +3,11 @@ CONTAINER ?= container
 BUILD_IMAGE := speedketchup-build
 
 IMAGE       ?= docker.io/gatispei/speedketchup
+HUB_REPO    ?= gatispei/speedketchup
+HUB_USER    ?= gatispei
+
+-include .env
+export DOCKERHUB_TOKEN
 IMAGE_BUILD ?= $(CONTAINER) build
 PLATFORMS   := linux/amd64,linux/386,linux/arm64,linux/arm/v6
 IMAGE_ARCHS := amd64=x64 386=i686 arm64=aarch64 arm=arm
@@ -55,7 +60,7 @@ linux_BINS   := $(addprefix bin/speedketchup-,$(LINUX) $(WINDOWS))
 linux_PACKED := $(addprefix bin/speedketchup-,$(addsuffix -upx,$(LINUX)) x64-upx.exe)
 macos_BINS   := $(addprefix bin/speedketchup-,$(MACOS))
 
-.PHONY: build release macos linux image build-image push clean smoke
+.PHONY: build release macos linux image build-image push overview clean smoke
 .DEFAULT_GOAL := build
 
 build:
@@ -105,6 +110,26 @@ push: image
 	esac
 	$(CONTAINER) image push $(IMAGE):$(VERSION)
 	$(CONTAINER) image push $(IMAGE):latest
+	@$(MAKE) --no-print-directory overview
+
+overview: DOCKERHUB.md
+	@if [ -z "$$DOCKERHUB_TOKEN" ]; then \
+		echo "no DOCKERHUB_TOKEN in .env, docker hub overview not updated" >&2; \
+	else \
+		jwt=$$(curl -sf -H "Content-Type: application/json" \
+			-d "{\"username\": \"$(HUB_USER)\", \"password\": \"$$DOCKERHUB_TOKEN\"}" \
+			https://hub.docker.com/v2/users/login/ \
+			| python3 -c "import json,sys; print(json.load(sys.stdin)['token'])") && \
+		code=$$(python3 -c "import json; print(json.dumps({'full_description': open('DOCKERHUB.md').read()}))" \
+			| curl -s -X PATCH -d @- -o /dev/null -w '%{http_code}' \
+				-H "Content-Type: application/json" -H "Authorization: JWT $$jwt" \
+				https://hub.docker.com/v2/repositories/$(HUB_REPO)/); \
+		case "$$code" in \
+		2*) echo "docker hub overview updated" ;; \
+		403) echo "docker hub refused the overview, DOCKERHUB_TOKEN has scope repo:write and needs read, write and delete" >&2; exit 1 ;; \
+		*) echo "docker hub overview failed, http $$code" >&2; exit 1 ;; \
+		esac; \
+	fi
 
 clean:
 	rm -rf target target-linux bin
