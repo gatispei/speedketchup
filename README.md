@@ -56,6 +56,29 @@ usage: speedketchup [options]
 	-uc|--uplaod-connections &ltnumber&gt: how many parallel connections to make for upload, 8 connections by default
 </pre>
 
+### Building
+
+A plain `make` gives you a binary for the machine you are on.
+
+The release binaries are smaller than that: they are built on a pinned rust
+nightly with `-Z build-std`, `-Zlocation-detail=none` and
+`-Cpanic=immediate-abort`, which rebuilds the standard library without the
+panic formatting machinery.
+
+<pre>
+make release   # every released binary, needs a mac
+make macos     # just the macos universal binary
+make linux     # just the linux + windows binaries
+</pre>
+
+The linux and windows binaries are cross built inside the container image in
+`build/Dockerfile` - `make linux` builds that image and re-enters make inside
+it, so the only thing needed on the host is [container](https://github.com/apple/container)
+on macos, or `CONTAINER=docker` (or podman) anywhere else. The image carries the
+cross toolchains, a musl built for the tier 3 mips targets, upx and qemu-user -
+every binary is run once before the build is considered done. Everything lands
+in `./bin`.
+
 ### Alternatives
 
 - https://www.speedtest.net/apps/cli - official speedtest cli tool, binary only

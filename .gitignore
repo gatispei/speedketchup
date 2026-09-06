@@ -2,3 +2,5 @@ Cargo.lock
 target
 speedketchup-results.csv
 ._*
+bin
+target-linux
