@@ -1575,7 +1575,36 @@ const HELP: &str = "usage: speedketchup [options]
 	-ud|--upload-duration <seconds>: how long to test upload speed, 0 disables test, 10 seconds by default
 	-dc|--download-connections <number>: how many parallel connections to make for download, 8 connections by default
 	-uc|--uplaod-connections <number>: how many parallel connections to make for upload, 8 connections by default
+
+every option can also be given as an environment variable, command line options
+take precedence:
+	SPEEDKETCHUP_INTERVAL, SPEEDKETCHUP_FILE, SPEEDKETCHUP_ADDRESS,
+	SPEEDKETCHUP_PORT, SPEEDKETCHUP_SERVER, SPEEDKETCHUP_DOWNLOAD_DURATION,
+	SPEEDKETCHUP_UPLOAD_DURATION, SPEEDKETCHUP_DOWNLOAD_CONNECTIONS,
+	SPEEDKETCHUP_UPLOAD_CONNECTIONS
 ";
+fn server_with_port(host: &str) -> String {
+    match host.find(":") {
+	Some(_off) => host.to_string(),
+	None => format!("{host}:8080")
+    }
+}
+
+fn env_str(name: &str) -> Option<String> {
+    match std::env::var(name) {
+	Ok(x) if x.len() > 0 => Some(x),
+	_ => None
+    }
+}
+
+fn env_num<T: std::str::FromStr>(name: &str) -> Option<T> {
+    let val = env_str(name)?;
+    match val.parse() {
+	Ok(x) => Some(x),
+	Err(_) => exit(&format!("bad {name} value '{val}'"), -1)
+    }
+}
+
 fn exit(str: &str, code: i32) -> ! {
     match code {
 	0 => eprintln!("{str}"),
@@ -1606,6 +1635,16 @@ fn main() {
 	upload_duration: 10,
 	upload_connections: 8,
     };
+
+    if let Some(x) = env_num("SPEEDKETCHUP_INTERVAL") { config.test_interval = x; }
+    if let Some(x) = env_str("SPEEDKETCHUP_FILE") { config.store_filename = x; }
+    if let Some(x) = env_str("SPEEDKETCHUP_ADDRESS") { config.listen_address = x; }
+    if let Some(x) = env_num("SPEEDKETCHUP_PORT") { config.listen_port = x; }
+    if let Some(x) = env_str("SPEEDKETCHUP_SERVER") { config.server_host = Some(server_with_port(&x)); }
+    if let Some(x) = env_num("SPEEDKETCHUP_DOWNLOAD_DURATION") { config.download_duration = x; }
+    if let Some(x) = env_num("SPEEDKETCHUP_UPLOAD_DURATION") { config.upload_duration = x; }
+    if let Some(x) = env_num("SPEEDKETCHUP_DOWNLOAD_CONNECTIONS") { config.download_connections = x; }
+    if let Some(x) = env_num("SPEEDKETCHUP_UPLOAD_CONNECTIONS") { config.upload_connections = x; }
 
     let args = std::env::args().collect::<Vec<_>>();
     let mut it = args.iter();
@@ -1646,12 +1685,7 @@ fn main() {
 	    },
 	    "-s" | "--server" => {
 		config.server_host = match it.next() {
-		    Some(x) => {
-			match x.find(":") {
-			    Some(_off) => Some(x.to_string()),
-			    None => Some(format!("{x}:8080"))
-			}
-		    }
+		    Some(x) => Some(server_with_port(x)),
 		    None => exit("no server given", -1),
 		}
 	    },
