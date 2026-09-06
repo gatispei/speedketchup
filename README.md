@@ -54,6 +54,13 @@ usage: speedketchup [options]
 	-ud|--upload-duration &ltseconds&gt: how long to test upload speed, 0 disables test, 10 seconds by default
 	-dc|--download-connections &ltnumber&gt: how many parallel connections to make for download, 8 connections by default
 	-uc|--uplaod-connections &ltnumber&gt: how many parallel connections to make for upload, 8 connections by default
+
+every option can also be given as an environment variable, command line options
+take precedence:
+	SPEEDKETCHUP_INTERVAL, SPEEDKETCHUP_FILE, SPEEDKETCHUP_ADDRESS,
+	SPEEDKETCHUP_PORT, SPEEDKETCHUP_SERVER, SPEEDKETCHUP_DOWNLOAD_DURATION,
+	SPEEDKETCHUP_UPLOAD_DURATION, SPEEDKETCHUP_DOWNLOAD_CONNECTIONS,
+	SPEEDKETCHUP_UPLOAD_CONNECTIONS
 </pre>
 
 ### Building
@@ -78,6 +85,26 @@ on macos, or `CONTAINER=docker` (or podman) anywhere else. The image carries the
 cross toolchains, a musl built for the tier 3 mips targets, upx and qemu-user -
 every binary is run once before the build is considered done. Everything lands
 in `./bin`.
+
+### Container
+
+The image is `FROM scratch`: one layer holding the statically linked binary and
+an empty `/data` for the results volume, nothing else. No shell, no libc, no
+base image underneath. Built for linux/amd64, linux/386, linux/arm64 and
+linux/arm/v6.
+
+<pre>
+make image
+</pre>
+
+That cross builds the binaries and assembles the manifest with the same
+container runtime as the rest of the build. With docker, point it at buildx:
+`make image IMAGE_BUILD="docker buildx build"`.
+
+<pre>
+docker volume create speedketchup
+docker run -p 8080:8080 -v speedketchup:/data gatispei/speedketchup
+</pre>
 
 ### Alternatives
 

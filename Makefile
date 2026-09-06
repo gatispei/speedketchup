@@ -1,6 +1,11 @@
 NIGHTLY   := nightly-2026-09-06
 CONTAINER ?= container
-IMAGE     := speedketchup-build
+BUILD_IMAGE := speedketchup-build
+
+IMAGE       ?= docker.io/gatispei/speedketchup
+IMAGE_BUILD ?= $(CONTAINER) build
+PLATFORMS   := linux/amd64,linux/386,linux/arm64,linux/arm/v6
+IMAGE_ARCHS := amd64=x64 386=i686 arm64=aarch64 arm=arm
 
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 SOURCES := Makefile Cargo.toml $(wildcard Cargo.lock src/*.rs asset/*)
@@ -50,7 +55,7 @@ linux_BINS   := $(addprefix bin/speedketchup-,$(LINUX) $(WINDOWS))
 linux_PACKED := $(addprefix bin/speedketchup-,$(addsuffix -upx,$(LINUX)) x64-upx.exe)
 macos_BINS   := $(addprefix bin/speedketchup-,$(MACOS))
 
-.PHONY: build release macos linux image clean smoke
+.PHONY: build release macos linux image build-image push clean smoke
 .DEFAULT_GOAL := build
 
 build:
@@ -80,9 +85,26 @@ bin/speedketchup-%-upx.exe: bin/speedketchup-%.exe
 	@rm -f $@
 	upx -qq --ultra-brute -o $@ $<
 
-image:
-	$(CONTAINER) build -t $(IMAGE) -f build/Dockerfile \
+build-image:
+	$(CONTAINER) build -t $(BUILD_IMAGE) -f build/Dockerfile \
 		--build-arg RUST_NIGHTLY=$(NIGHTLY) build
+
+image: $(addprefix bin/speedketchup-,x64 i686 aarch64 arm)
+	rm -rf bin/docker
+	mkdir -p bin/docker
+	@for m in $(IMAGE_ARCHS); do \
+		mkdir -p bin/docker/$${m%%=*}/data; \
+		cp bin/speedketchup-$${m#*=} bin/docker/$${m%%=*}/speedketchup; \
+	done
+	$(IMAGE_BUILD) --platform $(PLATFORMS) -t $(IMAGE):$(VERSION) -t $(IMAGE):latest .
+
+push: image
+	@case "$(IMAGE)" in \
+	*/*) ;; \
+	*) echo "IMAGE needs a namespace, eg make push IMAGE=docker.io/you/speedketchup" >&2; exit 1 ;; \
+	esac
+	$(CONTAINER) image push $(IMAGE):$(VERSION)
+	$(CONTAINER) image push $(IMAGE):latest
 
 clean:
 	rm -rf target target-linux bin
@@ -120,12 +142,12 @@ NCPU := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc)
 in_container = $(CONTAINER) run --rm -c $(NCPU) -m 8g \
 	-e SPEEDKETCHUP_IN_CONTAINER=1 \
 	-v "$(CURDIR):/src" -w /src \
-	$(IMAGE) make
+	$(BUILD_IMAGE) make
 
-linux: image
+linux: build-image
 	$(in_container) linux
 
-$(linux_BINS) $(linux_PACKED): image
+$(linux_BINS) $(linux_PACKED): build-image
 	$(in_container) $@
 
 macos: | toolchain
