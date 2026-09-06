@@ -15,22 +15,6 @@
           background-color: white;
           color: black;
       }
-      .settings_div {
-	  display: none;
-	  position: absolute;
-	  min-width: 150px;
-	  border-radius: 25px;
-	  padding: 20px;
-	  z-index: 1;
-	  margin-left: 50%;
-	  transform: translateX(-50%);
-          background-color: white;
-          color: black;
-	  box-shadow: 10px 10px 30px 0px #000f;
-      }
-      .show {
-	  display: block;
-      }
       #dash_outline {
 	  fill: #fff;
       }
@@ -43,15 +27,6 @@
 	  body {
               background-color: black;
               color: white;
-	  }
-	  .settings_div {
-              background-color: #222;
-              color: white;
-	      box-shadow: inset 0 0 0.5px 1px hsla(0, 0%, 100%, 0.075),
-			  0 0 0 1px hsla(0, 0%, 0%, 0.05),
-			  0 0.3px 0.4px hsla(0, 0%, 0%, 0.02),
-			  0 0.9px 1.5px hsla(0, 0%, 0%, 0.045),
-			  0 3.5px 6px hsla(0, 0%, 0%, 0.09);
 	  }
 	  #dash_outline {
 	      fill: #000;
@@ -232,11 +207,6 @@
 	  <circle cx="100" cy="21" r="14" fill="#ddd" class="inactive_button_circle"/>
 	  <circle cx="100" cy="21" r="4" fill="#fff" />
 	</g>
-	<g id="settings_button" class="button" style="cursor:pointer; visibility: visible;" onclick="onClickSettings()">
-	  <title>Settings Menu</title>
-	  <circle cx="100" cy="79" r="14" fill="#ed4" />
-	  <text text-anchor="middle" x="100" y="84.5" class="gt">⚙️</text>
-	</g>
 	<g id="disconnected2_button" style="visibility: hidden;">
 	  <title>Connection Lost</title>
 	  <circle cx="100" cy="79" r="14" fill="#ddd" class="inactive_button_circle"/>
@@ -247,34 +217,6 @@
       </svg>
     </div>
 
-    <div id="settings_div" class="settings_div">
-      <div>Test Interval</div>
-      <div style="display: flex;">
-	<input type="range" id="test_interval_range" min="0" max="16" list="test_interval_values" style="margin-right: 10px;"/>
-	<input type="text" id="test_interval_text" required maxlength="8" size="10" style="border-radius: 10px; padding: 5px; text-align: center;"/>
-      </div>
-      <div>Download Duration</div>
-      <div style="display: flex;">
-	<input type="range" id="download_duration_range" min="0" max="12" list="test_duration_values" style="margin-right: 10px;"/>
-	<input type="text" id="download_duration_text" required maxlength="8" size="10" style="border-radius: 10px; padding: 5px; text-align: center;"/>
-      </div>
-      <div>Upload Duration</div>
-      <div style="display: flex;">
-	<input type="range" id="upload_duration_range" min="0" max="12" list="test_duration_values" style="margin-right: 10px;"/>
-	<input type="text" id="upload_duration_text" required maxlength="8" size="10" style="border-radius: 10px; padding: 5px; text-align: center;"/>
-      </div>
-      <div>Download Connections</div>
-      <div style="display: flex;">
-	<input type="range" id="download_connections_range" min="0" max="12" list="test_connection_values" style="margin-right: 10px;"/>
-	<input type="text" id="download_connections_text" required maxlength="8" size="10" style="border-radius: 10px; padding: 5px; text-align: center;"/>
-      </div>
-      <div>Upload Connections</div>
-      <div style="display: flex;">
-	<input type="range" id="upload_connections_range" min="0" max="12" list="test_connection_values" style="margin-right: 10px;"/>
-	<input type="text" id="upload_connections_text" required maxlength="8" size="10" style="border-radius: 10px; padding: 5px; text-align: center;"/>
-      </div>
-      <div><input type="button" id="apply_button" value="✅ Apply" style="border-radius: 21px; margin-top: 20px; padding: 10px; text-align: center;"/></div>
-    </div>
     <div id="chart1"></div>
     <div id="chart2"></div>
     <script type="text/javascript">
@@ -385,13 +327,11 @@ function dashboard_set() {
 	el("start_button").style.visibility = "hidden";
 	el("stop_button").style.visibility = "hidden";
 	el("disconnected_button").style.visibility = "visible";
-	el("settings_button").style.visibility = "hidden";
 	el("disconnected2_button").style.visibility = "visible";
 	return;
     }
     el("disconnected_button").style.visibility = "hidden";
     el("disconnected2_button").style.visibility = "hidden";
-    el("settings_button").style.visibility = "visible";
     if (stateObj.state == "idle") {
 	el("start_button").style.visibility = "visible";
 	el("stop_button").style.visibility = "hidden";
@@ -508,22 +448,6 @@ function onClickStop() {
     req.send();
 }
 */
-
-function onClickSettings() {
-    debug("settings");
-    el("settings_div").classList.toggle("show");
-}
-
-// close settings if the user clicks outside of it
-window.onclick = function(e) {
-    var sb = el("settings_button");
-    var s = el("settings_div");
-    if (!s.contains(e.target) && !sb.contains(e.target)) {
-	if (s.classList.contains('show')) {
-	    s.classList.remove('show');
-	}
-    }
-}
 
 var chart1 = null;
 var chart2 = null;
