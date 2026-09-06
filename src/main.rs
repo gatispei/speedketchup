@@ -624,15 +624,16 @@ fn http_body(resp: &[u8]) -> Result<Vec<u8>, ErrorString> {
     Ok(body_str)
 }
 
-/*
 const HTTP: &str = "http";
+const MAX_REDIRECTS: u32 = 8;
+
 fn url_proto(url: &str) -> &str {
     match url.find("://") {
 	None => HTTP,
 	Some(i) => &url[0..i]
     }
 }
-*/
+
 fn url_host_and_path(url: &str) -> (&str, &str) {
     let start_idx = match url.find("://") {
 	None => 0,
@@ -646,32 +647,41 @@ fn url_host_and_path(url: &str) -> (&str, &str) {
 }
 
 fn http_get_follow_redirects(host: &str, path: &str) -> Result<Vec<u8>, ErrorString> {
-    let mut resp;
     let mut h = host.to_string();
     let mut p = path.to_string();
-    loop {
-	resp = http_get(&h, &p)?;
+    for _ in 0..MAX_REDIRECTS {
+	let resp = http_get(&h, &p)?;
 	match http_status_code(&resp)? {
 	    301 | 302 | 303 | 307 | 308 => (),
 	    _ => return Ok(resp)
 	};
-	let mut loc = false;
+	let mut loc = None;
 	http_headers(&resp, |hdr_type, hdr_val| {
 	    if hdr_type.to_ascii_lowercase() != b"location" {
 		return
 	    }
 	    if let Ok(v) = std::str::from_utf8(hdr_val) {
-		let (hh, pp) = url_host_and_path(v);
-		pr!("follow redirect to {hh} {pp}");
-		h = hh.to_string();
-		p = pp.to_string();
-		loc = true;
+		loc = Some(v.to_string());
 	    }
 	});
-	if loc == false {
-	    return Ok(resp);
+	let loc = match loc {
+	    None => return Ok(resp),
+	    Some(v) => v
+	};
+	let proto = url_proto(&loc);
+	if proto != HTTP {
+	    return Err(format!("redirect to {loc}, {proto} is not supported").into());
 	}
+	if loc.starts_with('/') {
+	    p = loc;
+	} else {
+	    let (hh, pp) = url_host_and_path(&loc);
+	    h = hh.to_string();
+	    p = pp.to_string();
+	}
+	pr!("follow redirect to {h} {p}");
     }
+    Err(format!("more than {MAX_REDIRECTS} redirects for {host}{path}").into())
 }
 
 fn test_download(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress: &Arc<AtomicUsize>) -> Result<usize, ErrorString> {
@@ -830,7 +840,7 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
     pr!("speedtest");
     set_status(state, "get provider info")?;
     let cfg = state.lock()?.config.clone();
-    let resp = http_get_follow_redirects("www.speedtest.net", "/speedtest-config.php")
+    let resp = http_get_follow_redirects("c.speedtest.net", "/speedtest-config.php")
 	.map_err(|e| format!("get config: {e}"))?;
 //    pr!("status:{} body:{}", http_status_code(&resp)?, http_body(&resp)?);
     let config_xml = http_body(&resp).map_err(|e| format!("config no body: {e}"))?;
@@ -922,7 +932,7 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
     let mut servers: Vec<_>;
     match server {
 	None => {
-	    let servers_xml = http_body(&http_get_follow_redirects("www.speedtest.net", "/speedtest-servers.php")?)?;
+	    let servers_xml = http_body(&http_get_follow_redirects("c.speedtest.net", "/speedtest-servers-static.php")?)?;
 	    pr!("servers_xml.len(): {:?}", servers_xml.len());
 	    let servers_xml = roxmltree::Document::parse(&std::str::from_utf8(&servers_xml)?)?;
 	    servers = servers_xml
