@@ -1449,7 +1449,7 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 	    }
 	}
 	if hdrend_off == 0 {
-	    if let Some(off) = memmem(&buf, b"\r\n\r\n") {
+	    if let Some(off) = memmem(&buf[0..bytes_read], b"\r\n\r\n") {
 		hdrend_off = off;
 		let hdr = &buf[0..hdrend_off + 2];
 //		pr!("request: {}", std::str::from_utf8(hdr).unwrap());
@@ -1465,7 +1465,7 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 		hdrend_off += 4;
 	    }
 	}
-	if bytes_read >= hdrend_off + content_length {
+	if hdrend_off != 0 && bytes_read >= hdrend_off + content_length {
 	    let hdr = &buf[0..hdrend_off];
 	    let content = &buf[hdrend_off..std::cmp::min(hdrend_off + content_length, buf.len())];
 	    let mut iter = hdr.split(|c| *c == b' ');

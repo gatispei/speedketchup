@@ -573,6 +573,20 @@ function initSpeedKetchup() {
 	    },
 	},
     ];
+    let no_data = data[0].length == 0;
+    function x_range(min, max) {
+	if (no_data) {
+	    let now = Math.floor(Date.now() / 1000);
+	    return [now - 3600, now];
+	}
+	return [min, max];
+    }
+    function y_range(min, max) {
+	if (no_data) {
+	    return [0, 100];
+	}
+	return uPlot.rangeNum(min, max, 0.1, true);
+    }
     let seriesOpts = {
 	points: {
 	    show: false,
@@ -613,6 +627,9 @@ function initSpeedKetchup() {
     };
     let legendFmt = uPlot.fmtDate("{YYYY}-{MMM}-{D} {H}:{mm}:{ss}");
     function get_values_for_legend(data, aggs, series_idx, idx) {
+	if (data[0].length == 0) {
+	    return { Time: "", Value: "", Min: "", Avg: "", Max: "" };
+	}
 	if (idx == null) {
 	    idx = data[0].length - 1;
 	}
@@ -648,16 +665,24 @@ function initSpeedKetchup() {
 	    x: {
 		range: (_, min, max) => {
 //		    debug("scales x min:" + min + " max:" + max);
+		    let r = x_range(min, max);
 		    for (let i = 1; i < d.length; i++) {
-			aggregates[i] = get_aggregates_for_series(d, min, max, i);
+			aggregates[i] = get_aggregates_for_series(d, r[0], r[1], i);
 		    }
 		    for (let i = 1; i < d2.length; i++) {
-			aggregates2[i] = get_aggregates_for_series(d2, min, max, i);
+			aggregates2[i] = get_aggregates_for_series(d2, r[0], r[1], i);
 		    }
-		    chart1.setLegend();
-		    chart2.setLegend();
-		    return [min, max];
+		    if (chart1) {
+			chart1.setLegend();
+		    }
+		    if (chart2) {
+			chart2.setLegend();
+		    }
+		    return r;
 		}
+	    },
+	    y: {
+		range: (_, min, max) => y_range(min, max)
 	    },
 	},
 
@@ -685,6 +710,14 @@ function initSpeedKetchup() {
 	...getSize(),
 	cursor: cursorOpts,
 	drawOrder: ["series", "axes"],
+	scales: {
+	    x: {
+		range: (_, min, max) => x_range(min, max)
+	    },
+	    y: {
+		range: (_, min, max) => y_range(min, max)
+	    },
+	},
 	series: [
 	    {},
 	    {
