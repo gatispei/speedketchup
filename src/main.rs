@@ -367,8 +367,8 @@ where for<'a> &'a [T]: PartialEq {
     haystack.windows(needle.len()).position(|window| window == needle)
 }
 
-fn duration<F, T>(work: F) -> Result<Duration, ErrorString> where
-    F: Fn() -> Result<T, ErrorString> {
+fn duration<F, T>(mut work: F) -> Result<Duration, ErrorString> where
+    F: FnMut() -> Result<T, ErrorString> {
     let now = Instant::now();
     let _ = work()?;
     Ok(now.elapsed())
@@ -390,8 +390,11 @@ where
     let mut samples = 0;
     let latencies: Vec<_> = (0..max_iters).filter_map(|_i| {
 	let mut timeout = total_dur.checked_sub(now.elapsed())?;
+	let mut resp: Vec<u8> = Vec::new();
 	let mut ret = match duration(|| {
-	    http_request(host, path, "GET", "", timeout, 0, None::<fn(&[u8])>, None::<fn(usize)>)
+	    http_request(host, path, "GET", "", timeout, 0, Some(|buf: &[u8]| {
+		resp.extend_from_slice(buf);
+	    }), None::<fn(usize)>)
 	}) {
 	    Err(e) => {
 		pr!("error: {}", e);
@@ -399,6 +402,17 @@ where
 	    },
 	    Ok(r) => r
 	};
+	match http_status_code(&resp) {
+	    Ok(200) => (),
+	    Ok(code) => {
+		pr!("error: http status {code}, not usable over http");
+		return None;
+	    },
+	    Err(e) => {
+		pr!("error: {e}");
+		return None;
+	    }
+	}
 	ret /= 2;
 	lat_tot += ret;
 	samples += 1;
