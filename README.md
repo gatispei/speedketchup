@@ -11,6 +11,7 @@ The intent is to allow monitoring of your internet connection as easy as possibl
 You can use speedketchup for one-off test or keep it running continuously to spot any changes in your internet connection.
 
 Prebuilt executables for some platforms:
+
 | platform | executable | [upx](https://upx.github.io/)-compressed executable |
 |-|-|-|
 |linux x86_64|[469k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64)|[204k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx)|
