@@ -51,6 +51,7 @@ docker run -p 8080:8080 -v speedketchup:/data -e SPEEDKETCHUP_INTERVAL=30 gatisp
 - uses HTTP protocol for all operations on network
 - results are stored in human readable [.csv](https://en.wikipedia.org/wiki/Comma-separated_values)
 - builtin web-server to display results with [uPlot](https://github.com/leeoniya/uPlot) chart
+- [prometheus](https://prometheus.io) metrics of the last test at `/metrics`: download and upload speed, idle and loaded latency, server and isp, test and failure counts
 - all web assets are included in the program binary
 - statically linked with [musl](https://musl.libc.org/), not dependent on system [libc](https://en.wikipedia.org/wiki/C_standard_library)
 - acts as a speedtest server itself. Not registered with official speedtest.net, but can be passed as speedtest server to supporting clients

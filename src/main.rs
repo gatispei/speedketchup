@@ -175,7 +175,10 @@ struct SpeedTestState {
     gauge_upload_latency: Option<Duration>,
 
     config: SpeedTestConfig,
-//    last_result: Option<SpeedTestResult>,
+    last_result: Option<SpeedTestResult>,
+    last_test_time: Option<u64>,
+    tests_total: u64,
+    test_failures_total: u64,
 
     to_conn_senders: HashMap<std::thread::ThreadId, mpsc::Sender<()>>,
     to_main_sender: mpsc::Sender<()>,
@@ -1337,6 +1340,54 @@ fn server_get_status(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, Error
     Ok(str)
 }
 
+fn prom_label(str: &str) -> String {
+    str.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+}
+
+fn prom_family(str: &mut String, name: &str, kind: &str, help: &str, samples: &[(String, f64)]) {
+    if samples.is_empty() {
+	return;
+    }
+    *str += &format!("# HELP {name} {help}\n# TYPE {name} {kind}\n");
+    for (labels, value) in samples {
+	*str += &format!("{name}{labels} {value}\n");
+    }
+}
+
+// prometheus text format, the speeds and latencies are the ones of the last
+// successful test and are left out until there is one
+fn server_get_metrics(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
+    let state = state.lock()?;
+    let mut str = String::new();
+    prom_family(&mut str, "speedketchup_build_info", "gauge", "Version of speedketchup.",
+		&[(format!("{{version=\"{PKG_VERSION}\"}}"), 1.0)]);
+    prom_family(&mut str, "speedketchup_tests_total", "counter", "Speed tests run since start.",
+		&[(String::new(), state.tests_total as f64)]);
+    prom_family(&mut str, "speedketchup_test_failures_total", "counter", "Speed tests that failed since start.",
+		&[(String::new(), state.test_failures_total as f64)]);
+    if let Some(t) = state.last_test_time {
+	prom_family(&mut str, "speedketchup_last_test_timestamp_seconds", "gauge", "Time the last test finished, failed or not.",
+		    &[(String::new(), t as f64)]);
+    }
+    if let Some(r) = &state.last_result {
+	if let Some(t) = r.timestamp {
+	    prom_family(&mut str, "speedketchup_last_success_timestamp_seconds", "gauge", "Time the last successful test finished.",
+			&[(String::new(), t as f64)]);
+	}
+	let bps = |x: Option<f32>| x.map(|x| (String::new(), (x as f64 * 1000.0).round() * 1000.0)).into_iter().collect::<Vec<_>>();
+	prom_family(&mut str, "speedketchup_download_bits_per_second", "gauge", "Download speed of the last successful test.", &bps(r.download));
+	prom_family(&mut str, "speedketchup_upload_bits_per_second", "gauge", "Upload speed of the last successful test.", &bps(r.upload));
+	let latencies: Vec<_> = [("idle", r.latency_idle), ("download", r.latency_download), ("upload", r.latency_upload)].iter()
+	    .filter_map(|(load, d)| d.map(|d| (format!("{{load=\"{load}\"}}"), d.as_secs_f64())))
+	    .collect();
+	prom_family(&mut str, "speedketchup_latency_seconds", "gauge", "Latency of the last successful test, idle and while downloading or uploading.", &latencies);
+	prom_family(&mut str, "speedketchup_last_test_info", "gauge", "Speedtest server and ISP of the last successful test.",
+		    &[(format!("{{server=\"{}\",server_host=\"{}\",isp=\"{}\"}}",
+			       prom_label(&r.server_descr), prom_label(&r.server_host), prom_label(&r.client_isp)), 1.0)]);
+    }
+    Ok(str)
+}
+
 fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStream, state: &Arc<Mutex<SpeedTestState>>, rx: &mpsc::Receiver<()>) -> Result<(), ErrorString> {
     let wait_duration = Duration::from_secs(30);
     let duration = Duration::from_secs(60);
@@ -1359,6 +1410,10 @@ fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStre
 	"data.json" => {
 	    _data = server_get_data(&state, true)?;
 	    (_data.as_bytes(), "application/json", 0)
+	},
+	"metrics" => {
+	    _data = server_get_metrics(state)?;
+	    (_data.as_bytes(), "text/plain; version=0.0.4; charset=utf-8", 0)
 	},
 	"status" => {
 	    let mut current_status = server_get_status(state)?;
@@ -1822,7 +1877,10 @@ fn main() {
 	gauge_upload_mbps: None,
 	gauge_upload_latency: None,
 	config: config,
-//	last_result: None,
+	last_result: None,
+	last_test_time: None,
+	tests_total: 0,
+	test_failures_total: 0,
 	to_conn_senders: HashMap::new(),
 	to_main_sender: tx,
 	test_requested: None,
@@ -1871,6 +1929,14 @@ fn main() {
             state.idle_until = Some(Instant::now() + test_interval.checked_sub(now.elapsed()).unwrap_or_default());
 	}
 	save_result(&filename, &result);
+	if let Ok(mut state) = state.lock() {
+	    state.tests_total += 1;
+	    state.last_test_time = Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs());
+	    match result {
+		Ok(r) => state.last_result = Some(r),
+		Err(_) => state.test_failures_total += 1,
+	    }
+	}
         let _ = set_status(&state, "idle");
 
 	// sleep for rest of test_interval unless test is manually requested

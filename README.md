@@ -37,6 +37,7 @@ Prebuilt executables for some platforms:
   - legend with min/avg/max of the displayed results and the share of results in the hovered value range
   - sortable table of the results with every recorded detail, including errors
   - updates in place when a test finishes, keeping the zoom and the picked view
+- [prometheus](https://prometheus.io) metrics of the last test at `/metrics`: download and upload speed, idle and loaded latency, server and isp, test and failure counts
 - all web assets are included in the program binary
 - linux version statically linked with [musl](https://musl.libc.org/) - not dependent on system [libc](https://en.wikipedia.org/wiki/C_standard_library), essentially a single binary container
 - acts as a speedtest server itself. Not registered with official speedtest.net, but can be passed as speedtest server to supporting clients
@@ -67,6 +68,33 @@ take precedence:
 	SPEEDKETCHUP_UPLOAD_DURATION, SPEEDKETCHUP_DOWNLOAD_CONNECTIONS,
 	SPEEDKETCHUP_UPLOAD_CONNECTIONS
 </pre>
+
+### Metrics
+
+`/metrics` serves the last test in the [prometheus text format](https://prometheus.io/docs/instrumenting/exposition_formats/):
+download and upload speed in bits per second, idle, download and upload latency
+in seconds, the server and isp as labels on `speedketchup_last_test_info`, and
+test and failure counts. Run with `-a 0.0.0.0` so the scraper can reach it.
+
+<pre>
+scrape_configs:
+  - job_name: speedketchup
+    static_configs:
+      - targets: ["speedketchup-host:8080"]
+</pre>
+
+Anything that scrapes prometheus or [OpenMetrics](https://openmetrics.io) endpoints can collect it, for example:
+
+- [Prometheus](https://prometheus.io), and the long term stores fed by it: [Thanos](https://thanos.io), [Cortex](https://cortexmetrics.io), [Grafana Mimir](https://grafana.com/oss/mimir/)
+- [VictoriaMetrics](https://victoriametrics.com) and vmagent
+- [Grafana Alloy](https://grafana.com/docs/alloy/) (formerly Grafana Agent), for Grafana Cloud
+- [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) with the prometheus receiver
+- [Telegraf](https://github.com/influxdata/telegraf) with the prometheus input, for InfluxDB and the other Telegraf outputs
+- [Netdata](https://www.netdata.cloud) with its prometheus collector
+- [Zabbix](https://www.zabbix.com) with an HTTP agent item and prometheus preprocessing
+- [Elastic Metricbeat](https://www.elastic.co/beats/metricbeat) with the prometheus module
+- [Datadog Agent](https://docs.datadoghq.com/integrations/openmetrics/) with the OpenMetrics check
+- [Checkmk](https://checkmk.com) with its prometheus integration
 
 ### Building
 
