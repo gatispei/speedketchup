@@ -1232,7 +1232,9 @@ fn json_str(str: &str) -> String {
     ret
 }
 
-fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
+// the results for the charts as javascript for the page load, or as json for
+// refreshing the page after a test
+fn server_get_data(state: &Arc<Mutex<SpeedTestState>>, json: bool) -> Result<String, ErrorString> {
     let filename = state.lock()?.config.store_filename.clone();
     let mut timestamps: Vec<u32> = vec!();
     let mut lat_idles: Vec<JSDur> = vec!();
@@ -1296,7 +1298,12 @@ fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorSt
 	downloads.push(downloads[0].clone());
 	uploads.push(uploads[0].clone());
     }
-    Ok(format!("let data = [{:?}, {:?}, {:?}, {:?}, {:?}, {:?}]; let data_info = [{}]; let stateObj = {};", timestamps, lat_idles, lat_dls, lat_uls, downloads, uploads, infos.join(","), server_get_status(state)?))
+    let data = format!("[{:?}, {:?}, {:?}, {:?}, {:?}, {:?}]", timestamps, lat_idles, lat_dls, lat_uls, downloads, uploads);
+    let infos = format!("[{}]", infos.join(","));
+    if json {
+	return Ok(format!("{{ \"data\": {}, \"info\": {} }}", data, infos));
+    }
+    Ok(format!("let data = {}; let data_info = {}; let stateObj = {};", data, infos, server_get_status(state)?))
 }
 
 fn server_get_status(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
@@ -1346,8 +1353,12 @@ fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStre
 	"uplot.js" => (ASSET_UPLOT_JS, "text/javascript", 0),
 	"uplot.css" => (ASSET_UPLOT_CSS, "text/css", 0),
 	"data.js" => {
-	    _data = server_get_data(&state)?;
+	    _data = server_get_data(&state, false)?;
 	    (_data.as_bytes(), "text/javascript", 0)
+	},
+	"data.json" => {
+	    _data = server_get_data(&state, true)?;
+	    (_data.as_bytes(), "application/json", 0)
 	},
 	"status" => {
 	    let mut current_status = server_get_status(state)?;

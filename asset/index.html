@@ -444,37 +444,33 @@ function dashboard_set() {
 	el("start_button").style.visibility = "hidden";
 	el("stop_button").style.visibility = "visible";
     }
-    if (stateObj.latency) {
-	el("idle_latency").textContent = format3(stateObj.latency, "ms");
+    // anything missing from the state is shown as on a fresh page load, so
+    // the gauges after a test look the same as after reloading the page
+    el("idle_latency").textContent = stateObj.latency ? format3(stateObj.latency, "ms") : "";
+    set_speed_gauge("download", 45, stateObj.download_mbps);
+    set_progress_band("download", 45, stateObj.download_progress);
+    el("download_latency").textContent = stateObj.download_latency ? format3(stateObj.download_latency, "ms") : "";
+    set_speed_gauge("upload", 155, stateObj.upload_mbps);
+    set_progress_band("upload", 155, stateObj.upload_progress);
+    el("upload_latency").textContent = stateObj.upload_latency ? format3(stateObj.upload_latency, "ms") : "";
+}
+
+function set_speed_gauge(name, cx, mbps) {
+    if (!mbps) {
+	el(name + "_mbps").textContent = "";
+	el(name + "_needle").style.visibility = "hidden";
+	el(name + "_speed_band_clip_path").setAttribute("d", "");
+	return;
     }
-    if (stateObj.download_mbps) {
-	el("download_mbps").textContent = format3(stateObj.download_mbps);
-	var deg = speed_to_gauge_degrees(stateObj.download_mbps);
-	el("download_needle").transform.baseVal[0].setRotate(-135 + deg, 45, 50);
-	el("download_needle").style.visibility = "visible";
-	el("download_speed_band_clip_path").setAttribute("d", "M45 50" + degrees_to_clip_path(deg));
-    }
-    if (stateObj.download_progress) {
-	var deg = stateObj.download_progress * 270 / 100;
-	el("download_progress_band_clip_path").setAttribute("d", "M45 50" + degrees_to_clip_path(deg));
-    }
-    if (stateObj.download_latency) {
-	el("download_latency").textContent = format3(stateObj.download_latency, "ms");
-    }
-    if (stateObj.upload_mbps) {
-	el("upload_mbps").textContent = format3(stateObj.upload_mbps);
-	var deg = speed_to_gauge_degrees(stateObj.upload_mbps);
-	el("upload_needle").transform.baseVal[0].setRotate(-135 + deg, 155, 50);
-	el("upload_needle").style.visibility = "visible";
-	el("upload_speed_band_clip_path").setAttribute("d", "M155 50" + degrees_to_clip_path(deg));
-    }
-    if (stateObj.upload_progress) {
-	var deg = stateObj.upload_progress * 270 / 100;
-	el("upload_progress_band_clip_path").setAttribute("d", "M155 50" + degrees_to_clip_path(deg));
-    }
-    if (stateObj.upload_latency) {
-	el("upload_latency").textContent = format3(stateObj.upload_latency, "ms");
-    }
+    el(name + "_mbps").textContent = format3(mbps);
+    var deg = speed_to_gauge_degrees(mbps);
+    el(name + "_needle").transform.baseVal[0].setRotate(-135 + deg, cx, 50);
+    el(name + "_needle").style.visibility = "visible";
+    el(name + "_speed_band_clip_path").setAttribute("d", "M" + cx + " 50" + degrees_to_clip_path(deg));
+}
+
+function set_progress_band(name, cx, progress) {
+    el(name + "_progress_band_clip_path").setAttribute("d", progress ? "M" + cx + " 50" + degrees_to_clip_path(progress * 270 / 100) : "");
 }
 
 function onRequest(r) {
@@ -493,10 +489,9 @@ function onRequest(r) {
 	debug("old:" + stateObj.state + " new:" + stateNew.state);
     }
     if (stateObj.state && stateObj.state != "idle" && stateNew.state == "idle") {
-	// reload when going idle
-	debug("reload on idle");
-	window.location.reload();
-	return;
+	// a test finished, show its result
+	debug("refresh on idle");
+	refreshResults();
     }
     stateOld = stateObj;
     stateObj = stateNew;
@@ -509,6 +504,24 @@ function onRequest(r) {
     dashboard_set();
     setTimeout(function () { request(stateStr, onRequest); }, 100);
 };
+
+// fetches the results and updates the charts in place, keeping the mode, the
+// zoom and the table sorting, falls back to reloading the page
+function refreshResults() {
+    fetch("data.json")
+	.then(r => {
+	    if (!r.ok) {
+		throw new Error("status " + r.status);
+	    }
+	    return r.json();
+	})
+	.then(j => refreshData(j.data, j.info))
+	.catch(e => {
+	    debug("refresh failed, reloading: " + e);
+	    window.location.reload();
+	});
+}
+var refreshData = null;
 
 var idleTimer = null;
 function updateIdleTime() {
@@ -1349,6 +1362,35 @@ function initSpeedKetchup() {
 	apply_mode();
     });
     show_time_interval();
+
+    // takes new results after a test, the charts keep their zoom unless
+    // they show everything, then they show the new results too
+    refreshData = function(new_data, new_info) {
+	for (let k = 0; k < data.length; k++) {
+	    data[k] = new_data[k];
+	}
+	[rd[0], rd[1], rd[2]] = [data[0], data[4], data[5]];
+	[rd2[0], rd2[1], rd2[2], rd2[3]] = [data[0], data[2], data[3], data[1]];
+	info = new_info;
+	no_data = data[0].length == 0;
+	set_chart_data(average_mode);
+	dist1.invalidate();
+	dist2.invalidate();
+	let span = profile_span();
+	for (let [chart, cd] of [[chart1, d], [chart2, d2]]) {
+	    let [min, max] = [chart.scales.x.min, chart.scales.x.max];
+	    let zoomed = span ? !(min == 0 && max == span) : time_interval != null;
+	    if (zoomed) {
+		restored_x = [min, max];
+		chart.setData(cd, false);
+		chart.setScale("x", { min: min, max: max });
+	    }
+	    else {
+		chart.setData(cd);
+	    }
+	}
+	show_time_interval();
+    };
 
     // refills the charts for the current mode, keeping the picked interval
     function apply_mode() {
