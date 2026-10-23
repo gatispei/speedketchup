@@ -204,6 +204,27 @@ docker volume create speedketchup
 docker run -p 8080:8080 -v speedketchup:/data gatispei/speedketchup
 </pre>
 
+### QNAP
+
+Packages for x86_64, arm_64 and arm-x41 QNAP NAS are attached to every
+release. To install and update SpeedKetchup from the App Center, add the
+repository in App Center > Settings > App Repository:
+
+<pre>
+https://speedketchup.com/qnap/repo.xml
+</pre>
+
+The packages are not signed by QNAP, so on QTS 4.5 and later first tick
+"Allow installation of applications without a valid digital signature" in
+App Center > Settings > General. The web page is on port 8288, the settings are in
+`speedketchup.conf` in the SpeedKetchup folder.
+
+<pre>
+make qpkg
+</pre>
+
+builds the packages from the linux binaries in `./bin` with QNAP's QDK.
+
 ### Alternatives
 
 - https://www.speedtest.net/apps/cli - official speedtest cli tool, binary only
