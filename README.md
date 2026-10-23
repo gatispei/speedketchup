@@ -23,7 +23,7 @@ Prebuilt executables for some platforms:
 |macos universal (x86_64 + aarch64)|[682k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-macos)|
 
 ### Builtin web server
-![speedketchup webserver](https://github.com/gatispei/speedketchup-files/blob/main/img/ketchup.png "SpeedKetchup webserver")
+![speedketchup webserver](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/img/ketchup.png "SpeedKetchup webserver")
 
 ### Features
 
