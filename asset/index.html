@@ -217,14 +217,37 @@
       </svg>
     </div>
 
-    <div id="chart1"></div>
-    <div id="chart2"></div>
+    <div style="display: flex; align-items: flex-start;">
+      <div id="chart1"></div>
+      <div id="dist1"></div>
+    </div>
+    <div style="display: flex; align-items: flex-start;">
+      <div id="chart2"></div>
+      <div id="dist2"></div>
+    </div>
     <script type="text/javascript">
+function getHeight() {
+    return Math.max(window.innerHeight / 2 - 200, 200);
+}
 function getSize() {
-    let h = Math.max(window.innerHeight / 2 - 200, 200);
     return {
-	width: window.innerWidth,
-	height: h,
+	width: window.innerWidth - getDistSize().width,
+	height: getHeight(),
+    }
+}
+// on narrow screens the distribution charts drop their value labels, the
+// main chart next to them already shows the same scale
+function isNarrow() {
+    return window.innerWidth < 600;
+}
+function getDistTitle() {
+    return isNarrow() ? "Dist." : "Distribution";
+}
+// the distribution charts take 20% of the total width
+function getDistSize() {
+    return {
+	width: Math.floor(window.innerWidth * 0.2),
+	height: getHeight(),
     }
 }
 
@@ -451,6 +474,8 @@ function onClickStop() {
 
 var chart1 = null;
 var chart2 = null;
+var dist1 = null;
+var dist2 = null;
 function initSpeedKetchup() {
     var dark = false;
     if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
@@ -567,6 +592,123 @@ function initSpeedKetchup() {
 	};
     }
 
+    // gaussian kernel density estimate of the series values that fall in the
+    // visible x range, evaluated at the given points
+    function get_density_for_series(data, minx, maxx, series_idx, points) {
+	let vals = [];
+	for (let i in data[0]) {
+	    if (data[0][i] < minx) {
+		continue;
+	    }
+	    if (data[0][i] > maxx) {
+		break;
+	    }
+	    let val = data[series_idx][i];
+	    if (val != null) {
+		vals.push(val);
+	    }
+	}
+	let density = points.map(() => 0);
+	if (vals.length == 0) {
+	    return density;
+	}
+	let avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+	let sd = Math.sqrt(vals.reduce((a, b) => a + (b - avg) * (b - avg), 0) / vals.length);
+	// silverman's rule of thumb, but never narrower than the step between points
+	let step = (points[points.length - 1] - points[0]) / (points.length - 1);
+	let h = Math.max(1.06 * sd * Math.pow(vals.length, -0.2), step);
+	let norm = 1 / (vals.length * h * Math.sqrt(2 * Math.PI));
+	for (let p in points) {
+	    let sum = 0;
+	    for (let v of vals) {
+		let z = (points[p] - v) / h;
+		sum += Math.exp(-0.5 * z * z);
+	    }
+	    density[p] = sum * norm;
+	}
+	return density;
+    }
+
+    // a sideways chart next to the main chart: the vertical axis is the main
+    // chart's y scale, the horizontal axis is the (unitless) density
+    function make_dist_chart(main_opts, el_id) {
+	let range = [0, 100];
+	let dist_opts = {
+	    title: getDistTitle(),
+	    ...getDistSize(),
+	    cursor: { show: false },
+	    legend: { show: false },
+	    drawOrder: ["series", "axes"],
+	    scales: {
+		x: {
+		    time: false,
+		    ori: 1,
+		    dir: 1,
+		    range: () => range,
+		},
+		y: {
+		    ori: 0,
+		    dir: 1,
+		    range: (_, min, max) => [0, max > 0 ? max * 1.1 : 1],
+		},
+	    },
+	    series: main_opts.series.map((s, i) => i == 0 ? {} : {
+		label: s.label,
+		fill: s.fill,
+		points: { show: false },
+	    }),
+	    axes: [
+		{
+		    ...axis[1],
+		    side: 3,
+		    space: 30, // same tick spacing as the main y axis
+		    // not 0, uplot only pads the plot top for axes with a non zero size
+		    size: () => isNarrow() ? 1 : 50,
+		    ticks: { ...axis[1].ticks, size: isNarrow() ? 0 : 10 },
+		    values: (u, splits) => splits.map(v => isNarrow() ? "" : v.toLocaleString()),
+		},
+		{ ...axis[0], side: 2, space: 50, values: (u, splits) => splits.map(() => "") },
+	    ],
+	};
+	let points = [];
+	let chart = new uPlot(dist_opts, [points, ...main_opts.series.slice(1).map(() => [])], el(el_id));
+	let last = null;
+	// called from the main chart's draw hook
+	chart.update = function(main_chart, d) {
+	    let ymin = main_chart.scales.y.min;
+	    let ymax = main_chart.scales.y.max;
+	    let xmin = main_chart.scales.x.min;
+	    let xmax = main_chart.scales.x.max;
+	    let key = [ymin, ymax, xmin, xmax].join();
+	    if (key == last || ymin == null || !(ymax > ymin)) {
+		return;
+	    }
+	    last = key;
+	    range = [ymin, ymax];
+	    const n = 100;
+	    points = [];
+	    for (let i = 0; i < n; i++) {
+		points.push(ymin + (ymax - ymin) * i / (n - 1));
+	    }
+	    let dist = [points];
+	    for (let i = 1; i < d.length; i++) {
+		dist.push(get_density_for_series(d, xmin, xmax, i, points));
+	    }
+	    chart.setData(dist);
+	};
+	return chart;
+    }
+    function dist_hooks(get_dist_chart, d) {
+	return {
+	    draw: [u => get_dist_chart().update(u, d)],
+	    setSeries: [(u, sidx, opts) => {
+		if (sidx != null && opts && opts.show != null) {
+		    get_dist_chart().setSeries(sidx, { show: opts.show });
+		}
+	    }],
+	};
+    }
+
     let d = [data[0], data[4], data[5]];
     let aggregates = [];
     for (let i in d) {
@@ -626,7 +768,9 @@ function initSpeedKetchup() {
 	    }
 	],
 	axes: axis,
+	hooks: dist_hooks(() => dist1, d),
     };
+    dist1 = make_dist_chart(opts, "dist1");
     chart1 = new uPlot(opts, d, document.getElementById("chart1"));
 
     let opts2 = {
@@ -664,12 +808,19 @@ function initSpeedKetchup() {
 	    },
 	],
 	axes: axis,
+	hooks: dist_hooks(() => dist2, d2),
     };
+    dist2 = make_dist_chart(opts2, "dist2");
     chart2 = new uPlot(opts2, d2, document.getElementById("chart2"));
 
     window.addEventListener("resize", e => {
 	chart1.setSize(getSize());
 	chart2.setSize(getSize());
+	for (let dist of [dist1, dist2]) {
+	    dist.axes[0].ticks.size = isNarrow() ? 0 : 10;
+	    dist.setSize(getDistSize());
+	    dist.root.querySelector(".u-title").textContent = getDistTitle();
+	}
     });
 
     request(null, onRequest);
