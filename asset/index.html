@@ -47,6 +47,41 @@
       #average_selector input:checked + span {
 	  background-color: #ddd;
       }
+      #results_table_wrap {
+	  overflow-x: auto;
+	  margin: 16px 0;
+      }
+      #results_table_caption {
+	  text-align: center;
+	  margin-bottom: 4px;
+      }
+      #results_table {
+	  /* the page is in quirks mode, where tables don't inherit the font */
+	  font-size: inherit;
+	  border-collapse: collapse;
+	  margin: 0 auto;
+	  white-space: nowrap;
+      }
+      #results_table th, #results_table td {
+	  padding: 2px 8px;
+	  border-bottom: 1px solid #8884;
+	  text-align: left;
+      }
+      #results_table th {
+	  cursor: pointer;
+	  user-select: none;
+	  -webkit-user-select: none;
+      }
+      #results_table .num {
+	  text-align: right;
+	  font-variant-numeric: tabular-nums;
+      }
+      #results_table .pad {
+	  visibility: hidden;
+      }
+      #results_table tbody tr:hover {
+	  background-color: #8882;
+      }
       #time_interval {
 	  text-align: center;
 	  margin: 4px 0;
@@ -266,6 +301,10 @@
     <div style="display: flex; align-items: flex-start;">
       <div id="chart2"></div>
       <div id="dist2"></div>
+    </div>
+    <div id="results_table_wrap">
+      <div id="results_table_caption"></div>
+      <table id="results_table"><thead><tr></tr></thead><tbody></tbody></table>
     </div>
     <script type="text/javascript">
 function getHeight() {
@@ -682,16 +721,18 @@ function initSpeedKetchup() {
 	if (!dist || u != hovered_chart || u.cursor.top == null || u.cursor.top < 0) {
 	    return null;
 	}
-	let points = dist.points;
-	if (points.length < 2) {
+	if (dist.range == null) {
 	    return null;
 	}
-	let raw = (points[points.length - 1] - points[0]) / 100;
-	let pow = Math.pow(10, Math.floor(Math.log10(raw)));
-	let m = raw / pow;
-	let step = (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * pow;
+	let step = bucket_step(dist.range);
 	let k = Math.floor(Math.max(u.posToVal(u.cursor.top, "y"), 0) / step);
 	return [k * step, (k + 1) * step];
+    }
+    function bucket_step(range) {
+	let raw = (range[1] - range[0]) / 100;
+	let pow = Math.pow(10, Math.floor(Math.log10(raw)));
+	let m = raw / pow;
+	return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * pow;
     }
     // the distribution bucket at the cursor's y position and the percentage
     // of the visible results that fall in it
@@ -723,36 +764,22 @@ function initSpeedKetchup() {
 	return vals.sort((a, b) => a - b);
     }
 
-    // gaussian kernel density estimate of the given sorted values, evaluated
-    // at the given points
-    function get_density(vals, points) {
-	let density = points.map(() => 0);
-	if (vals.length == 0) {
-	    return density;
-	}
-	let avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-	let sd = Math.sqrt(vals.reduce((a, b) => a + (b - avg) * (b - avg), 0) / vals.length);
-	// silverman's rule of thumb, the interquartile range keeps extreme
-	// results from smoothing out everything, never narrower than the step
-	// between points
-	let iqr = vals[Math.floor((vals.length - 1) * 0.75)] - vals[Math.floor((vals.length - 1) * 0.25)];
-	let spread = iqr > 0 ? Math.min(sd, iqr / 1.34) : sd;
-	let step = (points[points.length - 1] - points[0]) / (points.length - 1);
-	let h = Math.max(0.9 * spread * Math.pow(vals.length, -0.2), step);
-	let norm = 1 / (vals.length * h * Math.sqrt(2 * Math.PI));
-	for (let p in points) {
-	    let sum = 0;
-	    for (let v of vals) {
-		let z = (points[p] - v) / h;
-		sum += Math.exp(-0.5 * z * z);
+    // the percentage of the values in each step wide bucket, the buckets
+    // are given by their middles
+    function get_histogram(vals, middles, step) {
+	let ret = middles.map(() => 0);
+	for (let v of vals) {
+	    let k = Math.floor((v - middles[0] + step / 2) / step);
+	    if (k >= 0 && k < middles.length) {
+		ret[k] += 1;
 	    }
-	    density[p] = sum * norm;
 	}
-	return density;
+	return ret.map(cnt => vals.length > 0 ? cnt * 100 / vals.length : 0);
     }
 
     // a sideways chart next to the main chart: the vertical axis is the main
-    // chart's y scale, the horizontal axis is the (unitless) density
+    // chart's y scale, the horizontal axis is the (unitless) percentage of the
+    // results in each of the legend's range buckets
     function make_dist_chart(main_opts, el_id) {
 	let range = [0, 100];
 	let dist_opts = {
@@ -812,9 +839,9 @@ function initSpeedKetchup() {
 	    ],
 	};
 	let chart = new uPlot(dist_opts, [[], ...main_opts.series.slice(1).map(() => [])], el(el_id));
-	// the points the density is evaluated at and the visible values of each
-	// series, the main chart's legend uses these too
-	chart.points = [];
+	// the y range the buckets cover and the visible values of each series,
+	// the main chart's legend uses these too
+	chart.range = null;
 	chart.vals = [];
 	let last = null;
 	// forget the last computed distribution, for when the data changes
@@ -833,19 +860,21 @@ function initSpeedKetchup() {
 	    }
 	    last = key;
 	    range = [ymin, ymax];
-	    const n = 100;
-	    let points = [];
-	    for (let i = 0; i < n; i++) {
-		points.push(ymin + (ymax - ymin) * i / (n - 1));
+	    // the same buckets as the legend's range column, drawn through the
+	    // middle of each bucket
+	    let step = bucket_step(range);
+	    let middles = [];
+	    for (let k = Math.floor(ymin / step); k < Math.ceil(ymax / step); k++) {
+		middles.push((k + 0.5) * step);
 	    }
-	    let dist = [points];
+	    let dist = [middles];
 	    let vals = [null];
 	    let in_view = raw_in_view(xmin, xmax);
 	    for (let i = 1; i < d.length; i++) {
 		vals.push(get_visible_values(d, in_view, i));
-		dist.push(get_density(vals[i], points));
+		dist.push(get_histogram(vals[i], middles, step));
 	    }
-	    chart.points = points;
+	    chart.range = range;
 	    chart.vals = vals;
 	    chart.setData(dist);
 	};
@@ -1048,6 +1077,99 @@ function initSpeedKetchup() {
 	[d[0], d[1], d[2]] = [a[0], a[4], a[5]];
 	[d2[0], d2[1], d2[2], d2[3]] = [a[0], a[2], a[3], a[1]];
     }
+    // the table of the results in the picked time interval, at most
+    // table_max_rows of them, sorted by any column
+    const table_max_rows = 100;
+    // the text columns from the results file, older data.js doesn't have them
+    let info = typeof data_info == "undefined" ? [] : data_info;
+    const table_cols = [
+	{ name: "Time", get: i => data[0][i], fmt: v => legendFmts.raw(new Date(v * 1e3)) },
+	{ name: "Download (Mbps)", get: i => data[4][i], fmt: format3 },
+	{ name: "Upload (Mbps)", get: i => data[5][i], fmt: format3 },
+	{ name: "Latency Idle (ms)", get: i => data[1][i], fmt: format3 },
+	{ name: "Latency Downloading (ms)", get: i => data[2][i], fmt: format3 },
+	{ name: "Latency Uploading (ms)", get: i => data[3][i], fmt: format3 },
+	{ name: "Client IP", get: i => info[i]?.[0] },
+	{ name: "ISP", get: i => info[i]?.[1] },
+	{ name: "Server", get: i => info[i]?.[2] },
+	{ name: "Server Host", get: i => info[i]?.[3] },
+	{ name: "Error", get: i => info[i]?.[4] },
+    ];
+    // newest first by default, a click on a header sorts by that column, a
+    // second click reverses the order
+    let table_sort = { col: 0, desc: true };
+    function show_results_table() {
+	let head = el("results_table").tHead.rows[0];
+	if (head.cells.length == 0) {
+	    table_cols.forEach((col, c) => {
+		let th = document.createElement("th");
+		th.className = col.fmt == format3 ? "num" : "";
+		th.addEventListener("click", () => {
+		    table_sort = table_sort.col == c ? { col: c, desc: !table_sort.desc } : { col: c, desc: c == 0 };
+		    show_results_table();
+		});
+		head.appendChild(th);
+	    });
+	}
+	table_cols.forEach((col, c) => {
+	    head.cells[c].textContent = col.name + (table_sort.col == c ? (table_sort.desc ? " \u25bc" : " \u25b2") : "");
+	});
+
+	// a single result is in data twice, so the charts have a line to draw
+	let cnt = info.length || data[0].length;
+	let rows = [];
+	for (let i = 0; i < cnt; i++) {
+	    if (in_time_interval(data[0][i])) {
+		rows.push(i);
+	    }
+	}
+	let get = table_cols[table_sort.col].get;
+	let empty = v => v == null || v === "" || Number.isNaN(v);
+	rows.sort((a, b) => {
+	    let va = get(a);
+	    let vb = get(b);
+	    // empty values are last either way
+	    if (empty(va) || empty(vb)) {
+		return empty(va) - empty(vb) || data[0][b] - data[0][a];
+	    }
+	    let cmp = typeof va == "number" ? va - vb : String(va).localeCompare(String(vb));
+	    return (table_sort.desc ? -cmp : cmp) || data[0][b] - data[0][a];
+	});
+
+	let total = rows.length;
+	let cells = rows.slice(0, table_max_rows).map(i => table_cols.map(col => {
+	    let v = col.get(i);
+	    return empty(v) ? "" : col.fmt ? col.fmt(v) : String(v);
+	}));
+	// numbers are right aligned and padded with hidden decimals to the most
+	// decimals in their column, so the decimal points line up
+	let decimals = s => s.includes(".") ? s.length - s.indexOf(".") - 1 : 0;
+	let max_decimals = table_cols.map((col, c) => Math.max(0, ...cells.map(row => decimals(row[c]))));
+	let body = document.createElement("tbody");
+	for (let row of cells) {
+	    let tr = body.insertRow();
+	    table_cols.forEach((col, c) => {
+		let td = tr.insertCell();
+		td.textContent = row[c];
+		if (col.fmt != format3) {
+		    return;
+		}
+		td.className = "num";
+		let pad = max_decimals[c] - decimals(row[c]);
+		if (row[c] != "" && pad > 0) {
+		    let span = document.createElement("span");
+		    span.className = "pad";
+		    span.textContent = (row[c].includes(".") ? "" : ".") + "0".repeat(pad);
+		    td.appendChild(span);
+		}
+	    });
+	}
+	el("results_table").replaceChild(body, el("results_table").tBodies[0]);
+	el("results_table_caption").textContent = total > table_max_rows ?
+	    "First " + table_max_rows + " of " + total + " results" + (time_interval ? " in the picked interval" : "") :
+	    total + " results" + (time_interval ? " in the picked interval" : "");
+    }
+
     // the picked [from, to] time interval of the raw results, null for all
     // of them, zooming the raw, day or month charts picks it, and it is
     // kept when changing to another mode
@@ -1084,6 +1206,7 @@ function initSpeedKetchup() {
 	}
 	el("time_interval_text").textContent = (time_interval ? "" : "All: ") + text;
 	el("time_interval_clear").style.display = time_interval ? "" : "none";
+	show_results_table();
     }
     // the start of the day or month ts falls in
     function bucket_start(ts, mode) {

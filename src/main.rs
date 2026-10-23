@@ -1196,6 +1196,42 @@ impl std::fmt::Debug for JSf32 {
 	write!(f, "{}", float_to_str(self.0))
     }
 }
+// splits a line of the results file into fields, a field can be in quotes
+// to contain commas
+fn csv_fields(line: &str) -> Vec<String> {
+    let mut ret = vec!();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+	match c {
+	    '"' if quoted && chars.peek() == Some(&'"') => {
+		field.push('"');
+		chars.next();
+	    },
+	    '"' => quoted = !quoted,
+	    ',' if !quoted => ret.push(std::mem::take(&mut field)),
+	    c => field.push(c),
+	}
+    }
+    ret.push(field);
+    ret
+}
+
+fn json_str(str: &str) -> String {
+    let mut ret = String::from("\"");
+    for c in str.chars() {
+	match c {
+	    '"' => ret.push_str("\\\""),
+	    '\\' => ret.push_str("\\\\"),
+	    c if (c as u32) < 0x20 || c == '<' => ret.push_str(&format!("\\u{:04x}", c as u32)),
+	    c => ret.push(c),
+	}
+    }
+    ret.push('"');
+    ret
+}
+
 fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
     let filename = state.lock()?.config.store_filename.clone();
     let mut timestamps: Vec<u32> = vec!();
@@ -1204,6 +1240,9 @@ fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorSt
     let mut lat_uls: Vec<JSDur> = vec!();
     let mut downloads: Vec<JSf32> = vec!();
     let mut uploads: Vec<JSf32> = vec!();
+    // the text columns, client ip, isp, server description, server host
+    // and error, for every result
+    let mut infos: Vec<String> = vec!();
     let data = match std::fs::read(&filename) {
 	Ok(d) => d,
 	Err(_e) => Vec::<u8>::new(),
@@ -1245,6 +1284,9 @@ fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorSt
 	lat_uls.push(JSDur(lat_ul));
 	downloads.push(JSf32(dl));
 	uploads.push(JSf32(ul));
+	let fields = csv_fields(line);
+	let info: Vec<_> = (6..11).map(|i| json_str(fields.get(i).map(|f| f.as_str()).unwrap_or(""))).collect();
+	infos.push(format!("[{}]", info.join(",")));
     }
     if timestamps.len() == 1 {
 	timestamps.push(timestamps[0].clone() + 1);
@@ -1254,7 +1296,7 @@ fn server_get_data(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorSt
 	downloads.push(downloads[0].clone());
 	uploads.push(uploads[0].clone());
     }
-    Ok(format!("let data = [{:?}, {:?}, {:?}, {:?}, {:?}, {:?}]; let stateObj = {};", timestamps, lat_idles, lat_dls, lat_uls, downloads, uploads, server_get_status(state)?))
+    Ok(format!("let data = [{:?}, {:?}, {:?}, {:?}, {:?}, {:?}]; let data_info = [{}]; let stateObj = {};", timestamps, lat_idles, lat_dls, lat_uls, downloads, uploads, infos.join(","), server_get_status(state)?))
 }
 
 fn server_get_status(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
