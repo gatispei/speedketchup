@@ -379,7 +379,7 @@ function formatNumber(num, width) {
     return ret;
 }
 function format3(num, postfix = "") {
-    if (typeof num == "undefined" || num == NaN || num == null) return "";
+    if (typeof num == "undefined" || num == null || Number.isNaN(num)) return "";
     if (num < 1) return "" + num.toFixed(3) + postfix;
     if (num < 10) return "" + num.toFixed(2) + postfix;
     if (num < 100) return "" + num.toFixed(1) + postfix;
