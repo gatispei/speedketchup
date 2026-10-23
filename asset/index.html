@@ -22,6 +22,31 @@
 	  width: 200px;
 	  margin: 0;
       }
+      #average_selector {
+	  text-align: center;
+	  margin: 4px 0;
+	  user-select: none;
+	  -webkit-user-select: none;
+      }
+      #average_selector input {
+	  display: none;
+      }
+      #average_selector span {
+	  display: inline-block;
+	  padding: 3px 10px;
+	  border: 1px solid #8888;
+	  margin-left: -1px;
+	  cursor: pointer;
+      }
+      #average_selector label:first-of-type span {
+	  border-radius: 4px 0 0 4px;
+      }
+      #average_selector label:last-of-type span {
+	  border-radius: 0 4px 4px 0;
+      }
+      #average_selector input:checked + span {
+	  background-color: #ddd;
+      }
 
       @media (prefers-color-scheme: dark) {
 	  body {
@@ -31,6 +56,9 @@
 	  #dash_outline {
 	      fill: #000;
 	      stroke: #aaa;
+	  }
+	  #average_selector input:checked + span {
+	      background-color: #444;
 	  }
 	  .st, .bt {
 	      fill: #fff;
@@ -217,6 +245,10 @@
       </svg>
     </div>
 
+    <div id="average_selector">
+      Show:
+      <label title="Every test result"><input type="radio" name="average" value="raw"><span>Raw</span></label><label title="Daily averages"><input type="radio" name="average" value="day"><span>Day</span></label><label title="Monthly averages"><input type="radio" name="average" value="month"><span>Month</span></label>
+    </div>
     <div style="display: flex; align-items: flex-start;">
       <div id="chart1"></div>
       <div id="dist1"></div>
@@ -534,39 +566,35 @@ function initSpeedKetchup() {
     // visible values, so a few extreme results don't squash the rest of the
     // chart, nothing is dropped until there are enough values to drop a whole one
     const latency_max_drop = 0.01;
-    function y_range(u, min, max, max_drop = 0) {
+    // the y axis always covers the raw results, even when averages are shown
+    function y_range(u, min, max, raw, max_drop = 0) {
 	if (no_data) {
 	    return [0, 100];
 	}
-	if (max_drop == 0) {
-	    return uPlot.rangeNum(min, max, 0.1, true);
-	}
 	// the x scale is not known yet while the chart is created
 	let minx = u.scales.x.min ?? -Infinity;
-	let maxx = u.scales.x.max ?? Infinity;
+	let maxx = raw_x_end(u.scales.x.max ?? Infinity);
 	let vals = [];
 	for (let s = 1; s < u.series.length; s++) {
 	    if (!u.series[s].show) {
 		continue;
 	    }
-	    for (let i in u.data[0]) {
-		if (u.data[0][i] < minx) {
+	    for (let i in raw[0]) {
+		if (raw[0][i] < minx) {
 		    continue;
 		}
-		if (u.data[0][i] > maxx) {
+		if (raw[0][i] > maxx) {
 		    break;
 		}
-		if (u.data[s][i] != null) {
-		    vals.push(u.data[s][i]);
+		if (raw[s][i] != null) {
+		    vals.push(raw[s][i]);
 		}
 	    }
 	}
 	if (vals.length > 0) {
 	    vals.sort((a, b) => a - b);
-	    let trimmed = vals[vals.length - 1 - Math.floor(vals.length * max_drop)];
-	    if (trimmed > min) {
-		max = trimmed;
-	    }
+	    min = vals[0];
+	    max = vals[vals.length - 1 - Math.floor(vals.length * max_drop)];
 	}
 	return uPlot.rangeNum(min, max, 0.1, true);
     }
@@ -608,7 +636,11 @@ function initSpeedKetchup() {
 	}
 	return aggs;
     };
-    let legendFmt = uPlot.fmtDate("{YYYY}-{MMM}-{D} {H}:{mm}:{ss}");
+    let legendFmts = {
+	raw: uPlot.fmtDate("{YYYY}-{MMM}-{D} {H}:{mm}:{ss}"),
+	day: uPlot.fmtDate("{YYYY}-{MMM}-{D}"),
+	month: uPlot.fmtDate("{YYYY}-{MMM}"),
+    };
     function get_values_for_legend(data, aggs, series_idx, idx, u, dist) {
 	if (data[0].length == 0) {
 	    return { Time: "", Value: "", Min: "", Avg: "", Max: "", Range: "" };
@@ -618,7 +650,7 @@ function initSpeedKetchup() {
 	}
 	let date = new Date(data[0][idx] * 1e3);
 	return {
-	    Time: legendFmt(date),
+	    Time: (legendFmts[average_mode] || legendFmts.raw)(date),
 	    Value: format3(data[series_idx][idx]),
 	    Min: format3(aggs[series_idx].min),
 	    Avg: format3(aggs[series_idx].avg),
@@ -778,6 +810,10 @@ function initSpeedKetchup() {
 	chart.points = [];
 	chart.vals = [];
 	let last = null;
+	// forget the last computed distribution, for when the data changes
+	chart.invalidate = function() {
+	    last = null;
+	};
 	// called from the main chart's draw hook
 	chart.update = function(main_chart, d) {
 	    let ymin = main_chart.scales.y.min;
@@ -798,7 +834,7 @@ function initSpeedKetchup() {
 	    let dist = [points];
 	    let vals = [null];
 	    for (let i = 1; i < d.length; i++) {
-		vals.push(get_visible_values(d, xmin, xmax, i));
+		vals.push(get_visible_values(d, xmin, raw_x_end(xmax), i));
 		dist.push(get_density(vals[i], points));
 	    }
 	    chart.points = points;
@@ -840,13 +876,83 @@ function initSpeedKetchup() {
 	};
     }
 
-    let d = [data[0], data[4], data[5]];
+    // averages of every series over local time days or months, the bucket
+    // start is the timestamp, "raw" returns the data as is
+    function get_averaged_data(data, mode) {
+	if (mode != "day" && mode != "month") {
+	    return data;
+	}
+	let ret = data.map(() => []);
+	let sums = null;
+	let cnts = null;
+	let flush = function() {
+	    if (sums == null) {
+		return;
+	    }
+	    for (let s = 1; s < data.length; s++) {
+		ret[s].push(cnts[s] > 0 ? sums[s] / cnts[s] : null);
+	    }
+	};
+	let bucket = null;
+	for (let i = 0; i < data[0].length; i++) {
+	    let date = new Date(data[0][i] * 1e3);
+	    let start = mode == "day" ?
+		new Date(date.getFullYear(), date.getMonth(), date.getDate()) :
+		new Date(date.getFullYear(), date.getMonth(), 1);
+	    let ts = start.getTime() / 1e3;
+	    if (ts != bucket) {
+		flush();
+		bucket = ts;
+		ret[0].push(ts);
+		sums = data.map(() => 0);
+		cnts = data.map(() => 0);
+	    }
+	    for (let s = 1; s < data.length; s++) {
+		if (data[s][i] != null) {
+		    sums[s] += data[s][i];
+		    cnts[s] += 1;
+		}
+	    }
+	}
+	flush();
+	return ret;
+    }
+
+    // the charts keep these arrays, they get refilled when the averaging changes
+    let d = [];
+    let d2 = [];
+    // the raw results in the same series order as the charts, the y axis
+    // range and the distributions are always computed from these
+    let rd = [data[0], data[4], data[5]];
+    let rd2 = [data[0], data[2], data[3], data[1]];
+    // an averaged point stands for the results until the next day or month,
+    // so the raw results of the last visible point reach until then
+    function raw_x_end(maxx) {
+	if (average_mode == "raw" || !isFinite(maxx)) {
+	    return maxx;
+	}
+	let date = new Date(maxx * 1e3);
+	let next = average_mode == "day" ?
+	    new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1) :
+	    new Date(date.getFullYear(), date.getMonth() + 1, 1);
+	return next.getTime() / 1e3 - 0.001;
+    }
+    function set_chart_data(mode) {
+	let a = get_averaged_data(data, mode);
+	[d[0], d[1], d[2]] = [a[0], a[4], a[5]];
+	[d2[0], d2[1], d2[2], d2[3]] = [a[0], a[2], a[3], a[1]];
+    }
+    let average_mode = "raw";
+    try {
+	average_mode = localStorage.getItem("average") || "raw";
+    } catch (e) {}
+    set_chart_data(average_mode);
+
     let aggregates = [];
     for (let i in d) {
 	aggregates.push({ min: null, max: null, avg: null });
     }
 
-    let d2 = [data[0], data[2], data[3], data[1]];
     let aggregates2 = [];
     for (let i in d2) {
 	aggregates2.push({ min: null, max: null, avg: null });
@@ -879,7 +985,7 @@ function initSpeedKetchup() {
 		}
 	    },
 	    y: {
-		range: (u, min, max) => y_range(u, min, max)
+		range: (u, min, max) => y_range(u, min, max, rd)
 	    },
 	},
 
@@ -899,7 +1005,7 @@ function initSpeedKetchup() {
 	    }
 	],
 	axes: axis,
-	hooks: dist_hooks(() => dist1, d),
+	hooks: dist_hooks(() => dist1, rd),
     };
     dist1 = make_dist_chart(opts, "dist1");
     chart1 = new uPlot(opts, d, document.getElementById("chart1"));
@@ -914,7 +1020,7 @@ function initSpeedKetchup() {
 		range: (_, min, max) => x_range(min, max)
 	    },
 	    y: {
-		range: (u, min, max) => y_range(u, min, max, latency_max_drop)
+		range: (u, min, max) => y_range(u, min, max, rd2, latency_max_drop)
 	    },
 	},
 	series: [
@@ -939,10 +1045,25 @@ function initSpeedKetchup() {
 	    },
 	],
 	axes: axis,
-	hooks: dist_hooks(() => dist2, d2),
+	hooks: dist_hooks(() => dist2, rd2),
     };
     dist2 = make_dist_chart(opts2, "dist2");
     chart2 = new uPlot(opts2, d2, document.getElementById("chart2"));
+
+    for (let input of document.querySelectorAll("#average_selector input")) {
+	input.checked = input.value == average_mode;
+	input.addEventListener("change", () => {
+	    average_mode = input.value;
+	    try {
+		localStorage.setItem("average", average_mode);
+	    } catch (e) {}
+	    set_chart_data(average_mode);
+	    dist1.invalidate();
+	    dist2.invalidate();
+	    chart1.setData(d);
+	    chart2.setData(d2);
+	});
+    }
 
     window.addEventListener("resize", e => {
 	chart1.setSize(getSize());
