@@ -30,7 +30,7 @@ Prebuilt executables for some platforms:
 - automatic speedtest server selection based on latency or run against specific speedtest server
 - uses HTTP protocol for all operations on network, skips speedtest servers that only serve over HTTPS
 - tiny list of rust dependencies: [std](https://doc.rust-lang.org/std/index.html), [libc](https://crates.io/crates/libc), [roxmltree](https://crates.io/crates/roxmltree) + [xmlparser](https://crates.io/crates/xmlparser)
-- results are stored in human readable [.csv](https://en.wikipedia.org/wiki/Comma-separated_values), other storage backends incoming
+- results are stored in human readable [.csv](https://en.wikipedia.org/wiki/Comma-separated_values), and optionally written to [InfluxDB](https://www.influxdata.com) or anything else that takes its line protocol
 - builtin web-server to display results with [uPlot](https://github.com/leeoniya/uPlot) charts:
   - speed and latency charts, each with a distribution chart of the displayed results next to it
   - every result, or daily, monthly, time of day or time of week averages
@@ -60,13 +60,17 @@ usage: speedketchup [options]
 	-ud|--upload-duration &ltseconds&gt: how long to test upload speed, 0 disables test, 10 seconds by default
 	-dc|--download-connections &ltnumber&gt: how many parallel connections to make for download, 8 connections by default
 	-uc|--uplaod-connections &ltnumber&gt: how many parallel connections to make for upload, 8 connections by default
+	-iu|--influx-url &lturl&gt: also write every result to this InfluxDB line protocol write url, http only
+		eg http://influxdb:8086/api/v2/write?org=home&bucket=speedketchup
+	-it|--influx-token &lttoken&gt: token for the influx url, sent as 'Authorization: Token &lttoken&gt'
 
 every option can also be given as an environment variable, command line options
 take precedence:
 	SPEEDKETCHUP_INTERVAL, SPEEDKETCHUP_FILE, SPEEDKETCHUP_ADDRESS,
 	SPEEDKETCHUP_PORT, SPEEDKETCHUP_SERVER, SPEEDKETCHUP_DOWNLOAD_DURATION,
 	SPEEDKETCHUP_UPLOAD_DURATION, SPEEDKETCHUP_DOWNLOAD_CONNECTIONS,
-	SPEEDKETCHUP_UPLOAD_CONNECTIONS
+	SPEEDKETCHUP_UPLOAD_CONNECTIONS, SPEEDKETCHUP_INFLUX_URL,
+	SPEEDKETCHUP_INFLUX_TOKEN
 </pre>
 
 ### Metrics
@@ -95,6 +99,36 @@ Anything that scrapes prometheus or [OpenMetrics](https://openmetrics.io) endpoi
 - [Elastic Metricbeat](https://www.elastic.co/beats/metricbeat) with the prometheus module
 - [Datadog Agent](https://docs.datadoghq.com/integrations/openmetrics/) with the OpenMetrics check
 - [Checkmk](https://checkmk.com) with its prometheus integration
+
+### InfluxDB
+
+With `--influx-url` every result is also written as one
+[line protocol](https://docs.influxdata.com/influxdb/v2/reference/syntax/line-protocol/)
+point, right after it is saved to the csv:
+
+<pre>
+speedketchup,server=LIVAS/Riga/Latvia,server_host=speedtest.livas.lv:8080,isp=Tele2 download_mbps=40.6,upload_mbps=39.0,latency_idle_ms=44.2,latency_download_ms=71.7,latency_upload_ms=98.9,client_ip="203.0.113.7" 1792775257000000000
+</pre>
+
+The values are rounded like in the csv, fields of a disabled test are left out,
+and a failed test is a point with just an `error` string field. A write that
+fails is logged and not retried, the csv still has the result.
+
+The url is the complete write url, so the same option covers every server that
+takes line protocol over http. Put the token in `--influx-token` or
+`SPEEDKETCHUP_INFLUX_TOKEN`, it is sent as `Authorization: Token <token>`:
+
+| server | write url |
+|-|-|
+| InfluxDB 2 | `http://influxdb:8086/api/v2/write?org=home&bucket=speedketchup` + token |
+| InfluxDB 3 Core / Enterprise | `http://influxdb:8181/api/v2/write?bucket=speedketchup` + token |
+| InfluxDB 1 | `http://influxdb:8086/write?db=speedketchup`, add `&u=user&p=password` with auth enabled |
+| [VictoriaMetrics](https://victoriametrics.com) | `http://victoriametrics:8428/write`, it has no strings, `client_ip` and `error` turn up as series that are always 0 |
+| [QuestDB](https://questdb.com) | `http://questdb:9000/write` |
+| [Telegraf](https://github.com/influxdata/telegraf) influxdb_listener | `http://telegraf:8186/write`, and from there to any Telegraf output |
+
+Only http is supported, for InfluxDB Cloud or anything else behind https write
+to a local Telegraf and let it forward.
 
 ### Building
 

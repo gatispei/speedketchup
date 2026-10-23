@@ -40,6 +40,8 @@ Defaults are the values the image ships with.
 |`SPEEDKETCHUP_UPLOAD_DURATION`|`10`|how long to test upload speed, 0 disables|
 |`SPEEDKETCHUP_DOWNLOAD_CONNECTIONS`|`8`|parallel connections for download|
 |`SPEEDKETCHUP_UPLOAD_CONNECTIONS`|`8`|parallel connections for upload|
+|`SPEEDKETCHUP_INFLUX_URL`||InfluxDB line protocol write url to also write every result to, http only, eg `http://influxdb:8086/api/v2/write?org=home&bucket=speedketchup`|
+|`SPEEDKETCHUP_INFLUX_TOKEN`||token for the influx url, sent as `Authorization: Token <token>`|
 
 <pre>
 docker run -p 8080:8080 -v speedketchup:/data -e SPEEDKETCHUP_INTERVAL=30 gatispei/speedketchup
@@ -49,7 +51,7 @@ docker run -p 8080:8080 -v speedketchup:/data -e SPEEDKETCHUP_INTERVAL=30 gatisp
 
 - automatic speedtest server selection based on latency or run against specific speedtest server
 - uses HTTP protocol for all operations on network
-- results are stored in human readable [.csv](https://en.wikipedia.org/wiki/Comma-separated_values)
+- results are stored in human readable [.csv](https://en.wikipedia.org/wiki/Comma-separated_values), and optionally written to [InfluxDB](https://www.influxdata.com) or anything else that takes its line protocol
 - builtin web-server to display results with [uPlot](https://github.com/leeoniya/uPlot) chart
 - [prometheus](https://prometheus.io) metrics of the last test at `/metrics`: download and upload speed, idle and loaded latency, server and isp, test and failure counts
 - all web assets are included in the program binary

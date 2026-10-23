@@ -161,6 +161,9 @@ struct SpeedTestConfig {
     download_connections: u32,
     upload_duration: u32,
     upload_connections: u32,
+
+    influx_url: Option<String>,
+    influx_token: Option<String>,
 }
 
 struct SpeedTestState {
@@ -395,8 +398,9 @@ where
 	let mut timeout = total_dur.checked_sub(now.elapsed())?;
 	let mut resp: Vec<u8> = Vec::new();
 	let mut ret = match duration(|| {
-	    http_request(host, path, "GET", "", timeout, 0, Some(|buf: &[u8]| {
+	    http_request(host, path, "GET", "", "", timeout, 0, Some(|buf: &[u8]| {
 		resp.extend_from_slice(buf);
+		true
 	    }), None::<fn(usize)>)
 	}) {
 	    Err(e) => {
@@ -471,13 +475,14 @@ fn http_request<READ, WRITE>(
     path: &str,
     method: &str,
     extra_headers: &str,
+    body: &str,
     duration: Duration,
     send_data_size: usize,
     mut read_cb: Option<READ>,
     mut write_cb: Option<WRITE>)
     -> Result<(), ErrorString>
 where
-    READ: FnMut(&[u8]) -> (),
+    READ: FnMut(&[u8]) -> bool,
     WRITE: FnMut(usize) -> ()
 {
     let now = Instant::now();
@@ -500,7 +505,7 @@ User-Agent: {PKG_NAME}/{PKG_VERSION}\r
 Accept: */*\r
 Connection: close\r
 {extra_headers}\r
-");
+{body}");
 
     // send request
     let mut bytes_written = 0;
@@ -569,8 +574,12 @@ Connection: close\r
 //		    pr!("read done");
 		    break
 		}
+		// the callback returns false once it has the whole response, for
+		// servers that keep the connection open despite Connection: close
 		if let Some(ref mut cb) = read_cb {
-		    cb(&buf[0..bytes_read]);
+		    if cb(&buf[0..bytes_read]) == false {
+			break
+		    }
 		}
 //		pr!("read {bytes_read}");
 	    }
@@ -583,8 +592,9 @@ Connection: close\r
 fn http_get(host: &str, path: &str) -> Result<Vec<u8>, ErrorString> {
     let dur = Duration::from_secs(3);
     let mut resp: Vec<u8> = Vec::new();
-    http_request(host, path, "GET", "", dur, 0, Some(|buf: &[u8]| {
+    http_request(host, path, "GET", "", "", dur, 0, Some(|buf: &[u8]| {
 	resp.extend_from_slice(buf);
+	true
     }), None::<fn(usize)>).map_err(|e| format!("http_get {host} {path}: {e}"))?;
     Ok(resp)
 }
@@ -608,6 +618,32 @@ fn http_headers<CB>(resp: &[u8], mut cb: CB) where
 	cb(hdr_type, hdr_val);
     }
 }
+// whether resp holds the whole response, by its Content-Length or the last
+// chunk. Without either only the server closing the connection tells
+fn http_response_complete(resp: &[u8]) -> bool {
+    let head_len = match memmem(resp, b"\r\n\r\n") {
+	None => return false,
+	Some(i) => i + 4
+    };
+    if let Ok(204 | 304) = http_status_code(resp) {
+	return true;
+    }
+    let mut content_length = None;
+    let mut chunked = false;
+    http_headers(resp, |hdr_type, hdr_val| {
+	let hdr_type = hdr_type.to_ascii_lowercase();
+	if hdr_type == b"content-length" {
+	    content_length = std::str::from_utf8(hdr_val).ok().and_then(|x| x.parse::<usize>().ok());
+	} else if hdr_type == b"transfer-encoding" && hdr_val.to_ascii_lowercase() == b"chunked" {
+	    chunked = true;
+	}
+    });
+    match content_length {
+	Some(len) => resp.len() >= head_len + len,
+	None => chunked && resp.ends_with(b"\r\n0\r\n\r\n"),
+    }
+}
+
 fn http_body(resp: &[u8]) -> Result<Vec<u8>, ErrorString> {
     let mut body = &resp[memmem(resp, b"\r\n\r\n").ok_or("no body")? + 4..];
     let mut chunked = false;
@@ -714,9 +750,10 @@ fn test_download(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress:
 	    Some(t) => {
 		let size = sizes[i];
 		let path = format!("speedtest/random{size}x{size}.jpg");
-		match http_request(host_str, &path, "GET", "Cache-Control: no-cache\r\n", t, 0, Some(|buf: &[u8]| {
+		match http_request(host_str, &path, "GET", "Cache-Control: no-cache\r\n", "", t, 0, Some(|buf: &[u8]| {
 		    progress.fetch_add(buf.len(), Ordering::Relaxed);
-		    bytes += buf.len()
+		    bytes += buf.len();
+		    true
 		}), None::<fn(usize)>) {
 		    Err(err) => pr!("downlaod {path}: {err}"),
 		    Ok(_) => ()
@@ -743,7 +780,7 @@ fn test_upload(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress: &
 	    Some(t) => {
 		let size = sizes[i];
 		let path = "speedtest/upload.php";
-		match http_request(host_str, &path, "POST", &format!("Content-Length: {size}\r\n"), t, size as usize, None::<fn(&[u8])>, Some(|b: usize| {
+		match http_request(host_str, &path, "POST", &format!("Content-Length: {size}\r\n"), "", t, size as usize, None::<fn(&[u8]) -> bool>, Some(|b: usize| {
 		    progress.fetch_add(b, Ordering::Relaxed);
 		    bytes += b;
 		})) {
@@ -1128,6 +1165,75 @@ fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
 		pr!("cannot write to {file}: {}", e);
 	    }
 	},
+    }
+}
+
+// line protocol tag values escape commas, equals signs and spaces, string
+// field values escape double quotes and backslashes, neither can hold a newline
+fn influx_tag(str: &str) -> String {
+    str.replace(",", "\\,").replace("=", "\\=").replace(" ", "\\ ").replace("\n", "\\ ")
+}
+
+fn influx_str(str: &str) -> String {
+    format!("\"{}\"", str.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " "))
+}
+
+// one point per test into the speedketchup measurement, with the same values
+// and rounding as the csv. A failed test is a point with just the error. The
+// url is the full write url, so InfluxDB 1, 2 and 3 and the databases and
+// agents that take line protocol all work without anything to tell them apart
+fn influx_write(url: &str, token: &Option<String>, result: &Result<SpeedTestResult, ErrorString>) -> Result<(), ErrorString> {
+    let line = match result {
+	Ok(r) => {
+	    let mut tags = String::new();
+	    for (k, v) in [("server", &r.server_descr), ("server_host", &r.server_host), ("isp", &r.client_isp)] {
+		if v.len() > 0 {
+		    tags += &format!(",{k}={}", influx_tag(v));
+		}
+	    }
+	    let mut fields = vec!();
+	    let floats = [("download_mbps", r.download), ("upload_mbps", r.upload),
+			  ("latency_idle_ms", r.latency_idle.map(|d| d.as_secs_f32() * 1000.0)),
+			  ("latency_download_ms", r.latency_download.map(|d| d.as_secs_f32() * 1000.0)),
+			  ("latency_upload_ms", r.latency_upload.map(|d| d.as_secs_f32() * 1000.0))];
+	    for (k, v) in floats {
+		if let Some(v) = v {
+		    fields.push(format!("{k}={}", float_to_str(v)));
+		}
+	    }
+	    if let Some(ip) = &r.client_public_ip {
+		fields.push(format!("client_ip={}", influx_str(&ip.to_string())));
+	    }
+	    if fields.is_empty() {
+		return Ok(());
+	    }
+	    let time = r.timestamp.map(|t| t as u64).unwrap_or_default();
+	    format!("speedketchup{tags} {} {}000000000\n", fields.join(","), time)
+	},
+	Err(e) => {
+	    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+	    format!("speedketchup error={} {time}000000000\n", influx_str(&e.to_string()))
+	},
+    };
+
+    let (host, path) = url_host_and_path(url);
+    let path = if path.len() > 0 { path } else { "/" };
+    let mut headers = format!("Content-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n", line.len());
+    if let Some(token) = token {
+	headers += &format!("Authorization: Token {token}\r\n");
+    }
+    let mut resp: Vec<u8> = Vec::new();
+    http_request(host, path, "POST", &headers, &line, Duration::from_secs(5), 0, Some(|buf: &[u8]| {
+	resp.extend_from_slice(buf);
+	!http_response_complete(&resp)
+    }), None::<fn(usize)>)?;
+    match http_status_code(&resp)? {
+	200..=299 => Ok(()),
+	code => {
+	    let body = http_body(&resp).unwrap_or_default();
+	    // leave out the query, it can hold v1 u= and p= credentials
+	    Err(format!("{host}{}: http {code} {}", path.split('?').next().unwrap_or(""), String::from_utf8_lossy(&body).trim()).into())
+	}
     }
 }
 
@@ -1683,13 +1789,17 @@ const HELP: &str = "usage: speedketchup [options]
 	-ud|--upload-duration <seconds>: how long to test upload speed, 0 disables test, 10 seconds by default
 	-dc|--download-connections <number>: how many parallel connections to make for download, 8 connections by default
 	-uc|--uplaod-connections <number>: how many parallel connections to make for upload, 8 connections by default
+	-iu|--influx-url <url>: also write every result to this InfluxDB line protocol write url, http only
+		eg http://influxdb:8086/api/v2/write?org=home&bucket=speedketchup
+	-it|--influx-token <token>: token for the influx url, sent as 'Authorization: Token <token>'
 
 every option can also be given as an environment variable, command line options
 take precedence:
 	SPEEDKETCHUP_INTERVAL, SPEEDKETCHUP_FILE, SPEEDKETCHUP_ADDRESS,
 	SPEEDKETCHUP_PORT, SPEEDKETCHUP_SERVER, SPEEDKETCHUP_DOWNLOAD_DURATION,
 	SPEEDKETCHUP_UPLOAD_DURATION, SPEEDKETCHUP_DOWNLOAD_CONNECTIONS,
-	SPEEDKETCHUP_UPLOAD_CONNECTIONS
+	SPEEDKETCHUP_UPLOAD_CONNECTIONS, SPEEDKETCHUP_INFLUX_URL,
+	SPEEDKETCHUP_INFLUX_TOKEN
 ";
 fn server_with_port(host: &str) -> String {
     match host.find(":") {
@@ -1742,6 +1852,8 @@ fn main() {
 	download_connections: 8,
 	upload_duration: 10,
 	upload_connections: 8,
+	influx_url: None,
+	influx_token: None,
     };
 
     if let Some(x) = env_num("SPEEDKETCHUP_INTERVAL") { config.test_interval = x; }
@@ -1753,6 +1865,8 @@ fn main() {
     if let Some(x) = env_num("SPEEDKETCHUP_UPLOAD_DURATION") { config.upload_duration = x; }
     if let Some(x) = env_num("SPEEDKETCHUP_DOWNLOAD_CONNECTIONS") { config.download_connections = x; }
     if let Some(x) = env_num("SPEEDKETCHUP_UPLOAD_CONNECTIONS") { config.upload_connections = x; }
+    if let Some(x) = env_str("SPEEDKETCHUP_INFLUX_URL") { config.influx_url = Some(x); }
+    if let Some(x) = env_str("SPEEDKETCHUP_INFLUX_TOKEN") { config.influx_token = Some(x); }
 
     let args = std::env::args().collect::<Vec<_>>();
     let mut it = args.iter();
@@ -1833,7 +1947,26 @@ fn main() {
 		    None => exit("no number given", -1),
 		}
 	    },
+	    "-iu" | "--influx-url" => {
+		config.influx_url = match it.next() {
+		    Some(x) => Some(x.clone()),
+		    None => exit("no influx url given", -1),
+		}
+	    },
+	    "-it" | "--influx-token" => {
+		config.influx_token = match it.next() {
+		    Some(x) => Some(x.clone()),
+		    None => exit("no influx token given", -1),
+		}
+	    },
 	    _ => exit(&format!("unknown arg '{}'", arg), -1),
+	}
+    }
+
+    if let Some(url) = &config.influx_url {
+	let proto = url_proto(url);
+	if !proto.eq_ignore_ascii_case(HTTP) {
+	    exit(&format!("influx url {url}: {proto} is not supported, only http"), -1);
 	}
     }
 
@@ -1849,6 +1982,12 @@ fn main() {
     println!("{ATTR_GREEN}download-connections: {ATTR_BOLD}{}{ATTR_RESET}", config.download_connections);
     println!("{ATTR_GREEN}upload-duration: {ATTR_BOLD}{}s{ATTR_RESET}", config.upload_duration);
     println!("{ATTR_GREEN}upload-connections: {ATTR_BOLD}{}{ATTR_RESET}", config.upload_connections);
+    if let Some(url) = &config.influx_url {
+	// leave out the query, it can hold v1 u= and p= credentials
+	let (host, path) = url_host_and_path(url);
+	println!("{ATTR_GREEN}influx: {ATTR_BOLD}{host}{}{}{ATTR_RESET}", path.split('?').next().unwrap_or(""),
+		 if config.influx_token.is_some() { ", with token" } else { "" });
+    }
     let sk_url = &format!("http://127.0.0.1:{}", config.listen_port);
 
     let listener = match std::net::TcpListener::bind((config.listen_address.as_str(), config.listen_port)) {
@@ -1920,7 +2059,9 @@ fn main() {
 	    }
 	};
 	let mut filename = String::new();
+	let mut influx = None;
 	if let Ok(mut state) = state.lock() {
+	    influx = state.config.influx_url.clone().map(|url| (url, state.config.influx_token.clone()));
 	    state.status = "save result".to_string();
 	    test_interval = Duration::from_secs(state.config.test_interval * 60);
 	    filename = state.config.store_filename.clone();
@@ -1929,6 +2070,11 @@ fn main() {
             state.idle_until = Some(Instant::now() + test_interval.checked_sub(now.elapsed()).unwrap_or_default());
 	}
 	save_result(&filename, &result);
+	if let Some((url, token)) = influx {
+	    if let Err(e) = influx_write(&url, &token, &result) {
+		pr!("influx write: {e}");
+	    }
+	}
 	if let Ok(mut state) = state.lock() {
 	    state.tests_total += 1;
 	    state.last_test_time = Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs());
