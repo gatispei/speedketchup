@@ -31,6 +31,7 @@ Prebuilt executables for some platforms:
 - uses HTTP protocol for all operations on network, skips speedtest servers that only serve over HTTPS
 - tiny list of rust dependencies: [std](https://doc.rust-lang.org/std/index.html), [libc](https://crates.io/crates/libc), [roxmltree](https://crates.io/crates/roxmltree) + [xmlparser](https://crates.io/crates/xmlparser)
 - results are stored in human readable [.csv](https://en.wikipedia.org/wiki/Comma-separated_values), and optionally written to [InfluxDB](https://www.influxdata.com) or anything else that takes its line protocol
+- optionally published over MQTT, with [Home Assistant](https://www.home-assistant.io) discovery
 - builtin web-server to display results with [uPlot](https://github.com/leeoniya/uPlot) charts:
   - speed and latency charts, each with a distribution chart of the displayed results next to it
   - every result, or daily, monthly, time of day or time of week averages
@@ -63,6 +64,10 @@ usage: speedketchup [options]
 	-iu|--influx-url &lturl&gt: also write every result to this InfluxDB line protocol write url, http only
 		eg http://influxdb:8086/api/v2/write?org=home&bucket=speedketchup
 	-it|--influx-token &lttoken&gt: token for the influx url, sent as 'Authorization: Token &lttoken&gt'
+	-mq|--mqtt &lthost[:port]&gt: also publish every result to this mqtt broker, with home assistant discovery
+		port: 1883 by default, plain mqtt only
+	-mu|--mqtt-user &ltuser&gt: user name for the mqtt broker
+	-mp|--mqtt-password &ltpassword&gt: password for the mqtt broker
 
 every option can also be given as an environment variable, command line options
 take precedence:
@@ -70,7 +75,8 @@ take precedence:
 	SPEEDKETCHUP_PORT, SPEEDKETCHUP_SERVER, SPEEDKETCHUP_DOWNLOAD_DURATION,
 	SPEEDKETCHUP_UPLOAD_DURATION, SPEEDKETCHUP_DOWNLOAD_CONNECTIONS,
 	SPEEDKETCHUP_UPLOAD_CONNECTIONS, SPEEDKETCHUP_INFLUX_URL,
-	SPEEDKETCHUP_INFLUX_TOKEN
+	SPEEDKETCHUP_INFLUX_TOKEN, SPEEDKETCHUP_MQTT, SPEEDKETCHUP_MQTT_USER,
+	SPEEDKETCHUP_MQTT_PASSWORD
 </pre>
 
 ### Metrics
@@ -129,6 +135,29 @@ takes line protocol over http. Put the token in `--influx-token` or
 
 Only http is supported, for InfluxDB Cloud or anything else behind https write
 to a local Telegraf and let it forward.
+
+### MQTT and Home Assistant
+
+With `--mqtt` every result is also published to an MQTT broker, with
+[Home Assistant discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery)
+messages, so a SpeedKetchup device shows up in Home Assistant by itself:
+download and upload speed, latency idle and while downloading and uploading,
+the time of the last test, a problem sensor that is on when the last test
+failed, and the server and isp.
+
+With the Mosquitto broker add-on of Home Assistant, the broker is the Home
+Assistant host and the user is a Home Assistant user, best one made for it:
+
+<pre>
+speedketchup -mq homeassistant.local -mu speedketchup -mp &ltpassword&gt
+</pre>
+
+The result goes to `speedketchup/state` as json, the discovery configs under
+`homeassistant/`, all retained, so a Home Assistant that restarts gets them
+from the broker. The speed and latency sensors go unavailable when there was no
+successful test for two intervals. The sensors of a test disabled with `-dd 0`
+or `-ud 0` are removed. speedketchup connects for every result and disconnects
+when the broker has acknowledged it. Only plain mqtt is supported, no TLS.
 
 ### Building
 

@@ -164,6 +164,10 @@ struct SpeedTestConfig {
 
     influx_url: Option<String>,
     influx_token: Option<String>,
+
+    mqtt_host: Option<String>,
+    mqtt_user: Option<String>,
+    mqtt_password: Option<String>,
 }
 
 struct SpeedTestState {
@@ -1237,6 +1241,184 @@ fn influx_write(url: &str, token: &Option<String>, result: &Result<SpeedTestResu
     }
 }
 
+// MQTT 3.1.1, just enough to publish: CONNECT, PUBLISH at QoS 1 and
+// DISCONNECT, on a connection of its own for every test
+
+fn mqtt_str(buf: &mut Vec<u8>, str: &[u8]) {
+    buf.extend_from_slice(&(str.len() as u16).to_be_bytes());
+    buf.extend_from_slice(str);
+}
+
+fn mqtt_packet(kind: u8, body: &[u8]) -> Vec<u8> {
+    let mut packet = vec![kind];
+    let mut len = body.len();
+    loop {
+	let byte = (len % 128) as u8;
+	len /= 128;
+	packet.push(if len > 0 { byte | 0x80 } else { byte });
+	if len == 0 {
+	    break;
+	}
+    }
+    packet.extend_from_slice(body);
+    packet
+}
+
+fn mqtt_read_packet(stream: &mut std::net::TcpStream) -> Result<(u8, Vec<u8>), ErrorString> {
+    let mut byte = [0_u8; 1];
+    std::io::Read::read_exact(stream, &mut byte)?;
+    let kind = byte[0];
+    let mut len = 0;
+    for shift in [0, 7, 14, 21] {
+	std::io::Read::read_exact(stream, &mut byte)?;
+	len |= ((byte[0] & 0x7f) as usize) << shift;
+	if byte[0] & 0x80 == 0 {
+	    break;
+	}
+    }
+    let mut body = vec![0_u8; len];
+    std::io::Read::read_exact(stream, &mut body)?;
+    Ok((kind, body))
+}
+
+// publishes (topic, payload, retain) messages and waits for the broker to
+// acknowledge every one of them
+fn mqtt_publish(cfg: &SpeedTestConfig, messages: &[(String, String, bool)]) -> Result<(), ErrorString> {
+    let host = cfg.mqtt_host.as_deref().ok_or("no mqtt broker")?;
+    let timeout = Duration::from_secs(5);
+    let addr = std::net::ToSocketAddrs::to_socket_addrs(host)
+	.map_err(|e| format!("{host}: {e}"))?.next().ok_or(format!("{host}: no address"))?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, timeout).map_err(|e| format!("{host}: {e}"))?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+
+    let mut body = vec!();
+    mqtt_str(&mut body, b"MQTT");
+    let mut flags = 0x02; // clean session
+    if cfg.mqtt_user.is_some() {
+	flags |= 0x80;
+    }
+    if cfg.mqtt_password.is_some() {
+	flags |= 0x40;
+    }
+    body.extend_from_slice(&[4, flags, 0, 60]);
+    mqtt_str(&mut body, PKG_NAME.as_bytes());
+    if let Some(user) = &cfg.mqtt_user {
+	mqtt_str(&mut body, user.as_bytes());
+    }
+    if let Some(password) = &cfg.mqtt_password {
+	mqtt_str(&mut body, password.as_bytes());
+    }
+    std::io::Write::write_all(&mut stream, &mqtt_packet(0x10, &body))?;
+    match mqtt_read_packet(&mut stream)? {
+	(0x20, ack) if ack.len() == 2 && ack[1] == 0 => (),
+	(0x20, ack) if ack.len() == 2 => return Err(format!("{host}: connection refused, {}", match ack[1] {
+	    1 => "unacceptable protocol version",
+	    2 => "client identifier rejected",
+	    3 => "server unavailable",
+	    4 => "bad user name or password",
+	    5 => "not authorized",
+	    _ => "unknown reason",
+	}).into()),
+	(kind, _) => return Err(format!("{host}: expected connack, got packet type {}", kind >> 4).into()),
+    }
+
+    let mut packets = vec!();
+    for (i, (topic, payload, retain)) in messages.iter().enumerate() {
+	let mut body = vec!();
+	mqtt_str(&mut body, topic.as_bytes());
+	body.extend_from_slice(&(i as u16 + 1).to_be_bytes());
+	body.extend_from_slice(payload.as_bytes());
+	packets.extend_from_slice(&mqtt_packet(0x32 | *retain as u8, &body));
+    }
+    std::io::Write::write_all(&mut stream, &packets)?;
+    let mut acked = 0;
+    while acked < messages.len() {
+	if let (0x40, _) = mqtt_read_packet(&mut stream).map_err(|e| format!("{host}: {acked} of {} published: {e}", messages.len()))? {
+	    acked += 1;
+	}
+    }
+    std::io::Write::write_all(&mut stream, &mqtt_packet(0xe0, &[]))?;
+    Ok(())
+}
+
+const MQTT_STATE_TOPIC: &str = "speedketchup/state";
+
+// home assistant discovery configs and the result. The configs are retained
+// and sent with every result, so they come back if they were deleted. Sensors
+// of a disabled test get an empty config, which removes them. The result is
+// retained too, a home assistant that restarts gets it from the broker
+fn mqtt_messages(cfg: &SpeedTestConfig, result: &Result<SpeedTestResult, ErrorString>) -> Vec<(String, String, bool)> {
+    let device = format!("{{\"identifiers\":[\"speedketchup\"],\"name\":\"SpeedKetchup\",\"model\":\"speedketchup\",\"sw_version\":\"{PKG_VERSION}\"}}");
+    let origin = format!("{{\"name\":\"speedketchup\",\"sw_version\":\"{PKG_VERSION}\",\"support_url\":\"https://github.com/gatispei/speedketchup\"}}");
+    // the numbers go unavailable when there was no successful test for two intervals
+    let expire_after = cfg.test_interval * 60 * 2 + 300;
+    let download = cfg.download_duration > 0;
+    let upload = cfg.upload_duration > 0;
+
+    let mut messages = vec!();
+    // (id, name, field, unit, device class, enabled), numbers
+    for (id, name, field, unit, class, enabled) in [
+	("download", "Download", "download_mbps", "Mbit/s", "data_rate", download),
+	("upload", "Upload", "upload_mbps", "Mbit/s", "data_rate", upload),
+	("latency_idle", "Latency", "latency_idle_ms", "ms", "duration", true),
+	("latency_download", "Latency while downloading", "latency_download_ms", "ms", "duration", download),
+	("latency_upload", "Latency while uploading", "latency_upload_ms", "ms", "duration", upload),
+    ] {
+	let config = match enabled {
+	    false => String::new(),
+	    true => format!("{{\"name\":\"{name}\",\"unique_id\":\"speedketchup_{id}\",\"state_topic\":\"{MQTT_STATE_TOPIC}\",\
+\"value_template\":\"{{{{ value_json.{field} | default(none) }}}}\",\"unit_of_measurement\":\"{unit}\",\
+\"device_class\":\"{class}\",\"state_class\":\"measurement\",\"suggested_display_precision\":1,\
+\"expire_after\":{expire_after},\"device\":{device},\"origin\":{origin}}}"),
+	};
+	messages.push((format!("homeassistant/sensor/speedketchup/{id}/config"), config, true));
+    }
+    // text and time, these do not expire, the time is when the last test ran
+    for (id, name, field, extra) in [
+	("last_test", "Last test", "time", ",\"device_class\":\"timestamp\""),
+	("server", "Server", "server", ",\"entity_category\":\"diagnostic\""),
+	("isp", "ISP", "isp", ",\"entity_category\":\"diagnostic\""),
+    ] {
+	messages.push((format!("homeassistant/sensor/speedketchup/{id}/config"),
+		       format!("{{\"name\":\"{name}\",\"unique_id\":\"speedketchup_{id}\",\"state_topic\":\"{MQTT_STATE_TOPIC}\",\
+\"value_template\":\"{{{{ value_json.{field} | default(none) }}}}\"{extra},\"device\":{device},\"origin\":{origin}}}"), true));
+    }
+    // on when the last test failed, with the error as an attribute
+    messages.push(("homeassistant/binary_sensor/speedketchup/problem/config".to_string(),
+		   format!("{{\"name\":\"Test failed\",\"unique_id\":\"speedketchup_problem\",\"state_topic\":\"{MQTT_STATE_TOPIC}\",\
+\"value_template\":\"{{{{ 'ON' if value_json.error is defined else 'OFF' }}}}\",\"json_attributes_topic\":\"{MQTT_STATE_TOPIC}\",\
+\"json_attributes_template\":\"{{{{ {{'error': value_json.error | default('')}} | tojson }}}}\",\
+\"device_class\":\"problem\",\"device\":{device},\"origin\":{origin}}}"), true));
+
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let mut state = vec!();
+    match result {
+	Ok(r) => {
+	    let time = r.timestamp.map(|t| t as u64).unwrap_or(now);
+	    state.push(format!("\"time\":\"{}\"", strftime_gmt(cstr!("%Y-%m-%dT%H:%M:%S+00:00"), time as i64)));
+	    let floats = [("download_mbps", r.download), ("upload_mbps", r.upload),
+			  ("latency_idle_ms", r.latency_idle.map(|d| d.as_secs_f32() * 1000.0)),
+			  ("latency_download_ms", r.latency_download.map(|d| d.as_secs_f32() * 1000.0)),
+			  ("latency_upload_ms", r.latency_upload.map(|d| d.as_secs_f32() * 1000.0))];
+	    for (k, v) in floats {
+		if let Some(v) = v {
+		    state.push(format!("\"{k}\":{}", float_to_str(v)));
+		}
+	    }
+	    state.push(format!("\"server\":{}", json_str(&r.server_descr)));
+	    state.push(format!("\"server_host\":{}", json_str(&r.server_host)));
+	    state.push(format!("\"isp\":{}", json_str(&r.client_isp)));
+	},
+	Err(e) => {
+	    state.push(format!("\"time\":\"{}\"", strftime_gmt(cstr!("%Y-%m-%dT%H:%M:%S+00:00"), now as i64)));
+	    state.push(format!("\"error\":{}", json_str(&e.to_string())));
+	},
+    }
+    messages.push((MQTT_STATE_TOPIC.to_string(), format!("{{{}}}", state.join(",")), true));
+    messages
+}
+
 #[allow(dead_code)]
 fn iterate_lines_in_file_backwards<CB>(file: &str, mut cb: CB) -> Result<(), ErrorString>
 where CB: FnMut(&[u8]) -> bool {
@@ -1793,6 +1975,10 @@ const HELP: &str = "usage: speedketchup [options]
 	-iu|--influx-url <url>: also write every result to this InfluxDB line protocol write url, http only
 		eg http://influxdb:8086/api/v2/write?org=home&bucket=speedketchup
 	-it|--influx-token <token>: token for the influx url, sent as 'Authorization: Token <token>'
+	-mq|--mqtt <host[:port]>: also publish every result to this mqtt broker, with home assistant discovery
+		port: 1883 by default, plain mqtt only
+	-mu|--mqtt-user <user>: user name for the mqtt broker
+	-mp|--mqtt-password <password>: password for the mqtt broker
 
 every option can also be given as an environment variable, command line options
 take precedence:
@@ -1800,12 +1986,20 @@ take precedence:
 	SPEEDKETCHUP_PORT, SPEEDKETCHUP_SERVER, SPEEDKETCHUP_DOWNLOAD_DURATION,
 	SPEEDKETCHUP_UPLOAD_DURATION, SPEEDKETCHUP_DOWNLOAD_CONNECTIONS,
 	SPEEDKETCHUP_UPLOAD_CONNECTIONS, SPEEDKETCHUP_INFLUX_URL,
-	SPEEDKETCHUP_INFLUX_TOKEN
+	SPEEDKETCHUP_INFLUX_TOKEN, SPEEDKETCHUP_MQTT, SPEEDKETCHUP_MQTT_USER,
+	SPEEDKETCHUP_MQTT_PASSWORD
 ";
 fn server_with_port(host: &str) -> String {
     match host.find(":") {
 	Some(_off) => host.to_string(),
 	None => format!("{host}:8080")
+    }
+}
+
+fn mqtt_with_port(host: &str) -> String {
+    match host.find(":") {
+	Some(_off) => host.to_string(),
+	None => format!("{host}:1883")
     }
 }
 
@@ -1855,6 +2049,9 @@ fn main() {
 	upload_connections: 8,
 	influx_url: None,
 	influx_token: None,
+	mqtt_host: None,
+	mqtt_user: None,
+	mqtt_password: None,
     };
 
     if let Some(x) = env_num("SPEEDKETCHUP_INTERVAL") { config.test_interval = x; }
@@ -1868,6 +2065,9 @@ fn main() {
     if let Some(x) = env_num("SPEEDKETCHUP_UPLOAD_CONNECTIONS") { config.upload_connections = x; }
     if let Some(x) = env_str("SPEEDKETCHUP_INFLUX_URL") { config.influx_url = Some(x); }
     if let Some(x) = env_str("SPEEDKETCHUP_INFLUX_TOKEN") { config.influx_token = Some(x); }
+    if let Some(x) = env_str("SPEEDKETCHUP_MQTT") { config.mqtt_host = Some(mqtt_with_port(&x)); }
+    if let Some(x) = env_str("SPEEDKETCHUP_MQTT_USER") { config.mqtt_user = Some(x); }
+    if let Some(x) = env_str("SPEEDKETCHUP_MQTT_PASSWORD") { config.mqtt_password = Some(x); }
 
     let args = std::env::args().collect::<Vec<_>>();
     let mut it = args.iter();
@@ -1960,6 +2160,24 @@ fn main() {
 		    None => exit("no influx token given", -1),
 		}
 	    },
+	    "-mq" | "--mqtt" => {
+		config.mqtt_host = match it.next() {
+		    Some(x) => Some(mqtt_with_port(x)),
+		    None => exit("no mqtt broker given", -1),
+		}
+	    },
+	    "-mu" | "--mqtt-user" => {
+		config.mqtt_user = match it.next() {
+		    Some(x) => Some(x.clone()),
+		    None => exit("no mqtt user given", -1),
+		}
+	    },
+	    "-mp" | "--mqtt-password" => {
+		config.mqtt_password = match it.next() {
+		    Some(x) => Some(x.clone()),
+		    None => exit("no mqtt password given", -1),
+		}
+	    },
 	    _ => exit(&format!("unknown arg '{}'", arg), -1),
 	}
     }
@@ -1988,6 +2206,10 @@ fn main() {
 	let (host, path) = url_host_and_path(url);
 	println!("{ATTR_GREEN}influx: {ATTR_BOLD}{host}{}{}{ATTR_RESET}", path.split('?').next().unwrap_or(""),
 		 if config.influx_token.is_some() { ", with token" } else { "" });
+    }
+    if let Some(host) = &config.mqtt_host {
+	println!("{ATTR_GREEN}mqtt: {ATTR_BOLD}{host}{}{ATTR_RESET}",
+		 match &config.mqtt_user { None => String::new(), Some(u) => format!(", as {u}") });
     }
     let sk_url = &format!("http://127.0.0.1:{}", config.listen_port);
 
@@ -2061,7 +2283,11 @@ fn main() {
 	};
 	let mut filename = String::new();
 	let mut influx = None;
+	let mut mqtt_config = None;
 	if let Ok(mut state) = state.lock() {
+	    if state.config.mqtt_host.is_some() {
+		mqtt_config = Some(state.config.clone());
+	    }
 	    influx = state.config.influx_url.clone().map(|url| (url, state.config.influx_token.clone()));
 	    state.status = "save result".to_string();
 	    test_interval = Duration::from_secs(state.config.test_interval * 60);
@@ -2074,6 +2300,11 @@ fn main() {
 	if let Some((url, token)) = influx {
 	    if let Err(e) = influx_write(&url, &token, &result) {
 		pr!("influx write: {e}");
+	    }
+	}
+	if let Some(cfg) = mqtt_config {
+	    if let Err(e) = mqtt_publish(&cfg, &mqtt_messages(&cfg, &result)) {
+		pr!("mqtt publish: {e}");
 	    }
 	}
 	if let Ok(mut state) = state.lock() {
