@@ -47,6 +47,15 @@
       #average_selector input:checked + span {
 	  background-color: #ddd;
       }
+      #time_interval {
+	  text-align: center;
+	  margin: 4px 0;
+      }
+      #time_interval_clear {
+	  cursor: pointer;
+	  padding: 0 4px;
+	  font-size: 13px;
+      }
 
       @media (prefers-color-scheme: dark) {
 	  body {
@@ -247,8 +256,9 @@
 
     <div id="average_selector">
       Show:
-      <label title="Every test result"><input type="radio" name="average" value="raw"><span>Raw</span></label><label title="Daily averages"><input type="radio" name="average" value="day"><span>Day</span></label><label title="Monthly averages"><input type="radio" name="average" value="month"><span>Month</span></label>
+      <label title="Every test result"><input type="radio" name="average" value="raw"><span>Raw</span></label><label title="Daily averages"><input type="radio" name="average" value="day"><span>Day</span></label><label title="Monthly averages"><input type="radio" name="average" value="month"><span>Month</span></label><label title="Averages by the hour of the day"><input type="radio" name="average" value="tod"><span>Time of Day</span></label><label title="Averages by the hour of the week"><input type="radio" name="average" value="dow"><span>Time of Week</span></label>
     </div>
+    <div id="time_interval"><span id="time_interval_text"></span> <span id="time_interval_clear" title="Show all results">&times;</span></div>
     <div style="display: flex; align-items: flex-start;">
       <div id="chart1"></div>
       <div id="dist1"></div>
@@ -556,6 +566,14 @@ function initSpeedKetchup() {
     ];
     let no_data = data[0].length == 0;
     function x_range(min, max) {
+	let span = profile_span();
+	if (span) {
+	    // the whole day or week, unless zoomed in
+	    if (d[0].length == 0 || (min == d[0][0] && max == d[0][d[0].length - 1])) {
+		return [0, span];
+	    }
+	    return [min, max];
+	}
 	if (no_data) {
 	    let now = Math.floor(Date.now() / 1000);
 	    return [now - 3600, now];
@@ -571,22 +589,17 @@ function initSpeedKetchup() {
 	if (no_data) {
 	    return [0, 100];
 	}
-	// the x scale is not known yet while the chart is created
-	let minx = u.scales.x.min ?? -Infinity;
-	let maxx = raw_x_end(u.scales.x.max ?? Infinity);
+	// uplot only updates u.scales.x after all the ranges are computed, so the
+	// new x range is kept by the x range function, which runs first
+	let [minx, maxx] = u.x_view ?? [-Infinity, Infinity];
+	let in_view = raw_in_view(minx, maxx);
 	let vals = [];
 	for (let s = 1; s < u.series.length; s++) {
 	    if (!u.series[s].show) {
 		continue;
 	    }
-	    for (let i in raw[0]) {
-		if (raw[0][i] < minx) {
-		    continue;
-		}
-		if (raw[0][i] > maxx) {
-		    break;
-		}
-		if (raw[s][i] != null) {
+	    for (let i = 0; i < raw[0].length; i++) {
+		if (raw[s][i] != null && in_view(i)) {
 		    vals.push(raw[s][i]);
 		}
 	    }
@@ -648,9 +661,9 @@ function initSpeedKetchup() {
 	if (idx == null) {
 	    idx = data[0].length - 1;
 	}
-	let date = new Date(data[0][idx] * 1e3);
+	let x = data[0][idx];
 	return {
-	    Time: (legendFmts[average_mode] || legendFmts.raw)(date),
+	    Time: profile_span() ? format_profile_x(x, true) : (legendFmts[average_mode] || legendFmts.raw)(new Date(x * 1e3)),
 	    Value: format3(data[series_idx][idx]),
 	    Min: format3(aggs[series_idx].min),
 	    Avg: format3(aggs[series_idx].avg),
@@ -698,18 +711,12 @@ function initSpeedKetchup() {
 	return format3(lo) + "-" + format3(hi) + ": " + (cnt * 100 / vals.length).toFixed(1) + "%";
     }
 
-    // sorted series values that fall in the visible x range
-    function get_visible_values(data, minx, maxx, series_idx) {
+    // sorted raw series values that fall in the visible x range
+    function get_visible_values(data, in_view, series_idx) {
 	let vals = [];
-	for (let i in data[0]) {
-	    if (data[0][i] < minx) {
-		continue;
-	    }
-	    if (data[0][i] > maxx) {
-		break;
-	    }
+	for (let i = 0; i < data[0].length; i++) {
 	    let val = data[series_idx][i];
-	    if (val != null) {
+	    if (val != null && in_view(i)) {
 		vals.push(val);
 	    }
 	}
@@ -833,8 +840,9 @@ function initSpeedKetchup() {
 	    }
 	    let dist = [points];
 	    let vals = [null];
+	    let in_view = raw_in_view(xmin, xmax);
 	    for (let i = 1; i < d.length; i++) {
-		vals.push(get_visible_values(d, xmin, raw_x_end(xmax), i));
+		vals.push(get_visible_values(d, in_view, i));
 		dist.push(get_density(vals[i], points));
 	    }
 	    chart.points = points;
@@ -842,6 +850,32 @@ function initSpeedKetchup() {
 	    chart.setData(dist);
 	};
 	return chart;
+    }
+    // in the time of day and week modes the x axis shows hours and weekdays
+    // instead of dates
+    function wrap_x_axis(u) {
+	let axis = u.axes[0];
+	let splits = axis.splits;
+	let values = axis.values;
+	axis.splits = function(u, axis_idx, min, max) {
+	    if (!profile_span()) {
+		return splits.apply(this, arguments);
+	    }
+	    let width = u.bbox.width / (window.devicePixelRatio || 1);
+	    let space = average_mode == "dow" ? 70 : 50;
+	    let step = [3600, 7200, 10800, 21600, 43200, 86400].find(s => s * width / (max - min) >= space) || 86400;
+	    let ret = [];
+	    for (let x = Math.ceil(min / step) * step; x <= max; x += step) {
+		ret.push(x);
+	    }
+	    return ret;
+	};
+	axis.values = function(u, splits) {
+	    if (!profile_span()) {
+		return values.apply(this, arguments);
+	    }
+	    return splits.map(x => format_profile_x(x, false));
+	};
     }
     function set_band(dist, band) {
 	if (String(dist.band) != String(band)) {
@@ -858,6 +892,7 @@ function initSpeedKetchup() {
 		}
 	    }],
 	    init: [u => {
+		wrap_x_axis(u);
 		u.over.addEventListener("mouseenter", () => { hovered_chart = u; });
 		u.over.addEventListener("mouseleave", () => {
 		    hovered_chart = null;
@@ -876,9 +911,64 @@ function initSpeedKetchup() {
 	};
     }
 
+    // the time of day ("tod") and week ("dow") modes average the results by
+    // the hour of the day or week, the x axis is then the seconds since the
+    // local midnight or monday's local midnight
+    const profile_bucket = 3600;
+    const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    function profile_span() {
+	return average_mode == "tod" ? 86400 : average_mode == "dow" ? 7 * 86400 : 0;
+    }
+    // the x of the middle of the hour the result at ts falls in
+    function profile_x(ts, mode) {
+	let date = new Date(ts * 1e3);
+	let x = date.getHours() * 3600;
+	if (mode == "dow") {
+	    x += ((date.getDay() + 6) % 7) * 86400;
+	}
+	return x + profile_bucket / 2;
+    }
+    function format_profile_x(x, bucket) {
+	let hm = x => formatNumber(Math.floor(x % 86400 / 3600), 2) + ":" + formatNumber(Math.floor(x % 3600 / 60), 2);
+	let day = average_mode == "dow" ? weekdays[Math.floor(x / 86400) % 7] + " " : "";
+	if (!bucket) {
+	    return average_mode == "dow" && x % 86400 == 0 ? day.trim() : hm(x);
+	}
+	let start = x - profile_bucket / 2;
+	return day + hm(start) + "-" + hm(start + profile_bucket).replace(/^00:00$/, "24:00");
+    }
+
     // averages of every series over local time days or months, the bucket
-    // start is the timestamp, "raw" returns the data as is
+    // start is the timestamp, or over the hours of the day or week, "raw"
+    // returns the data as is
     function get_averaged_data(data, mode) {
+	if (mode == "tod" || mode == "dow") {
+	    let n = (mode == "tod" ? 86400 : 7 * 86400) / profile_bucket;
+	    let sums = data.map(() => new Array(n).fill(0));
+	    let cnts = data.map(() => new Array(n).fill(0));
+	    for (let i = 0; i < data[0].length; i++) {
+		let b = Math.floor(profile_x(data[0][i], mode) / profile_bucket);
+		for (let s = 1; s < data.length; s++) {
+		    if (data[s][i] != null) {
+			sums[s][b] += data[s][i];
+			cnts[s][b] += 1;
+		    }
+		}
+	    }
+	    // hours without any results are left out, so the line connects the
+	    // hours around them
+	    let ret = data.map(() => []);
+	    for (let b = 0; b < n; b++) {
+		if (!cnts.some((cnt, s) => s > 0 && cnt[b] > 0)) {
+		    continue;
+		}
+		ret[0].push(b * profile_bucket + profile_bucket / 2);
+		for (let s = 1; s < data.length; s++) {
+		    ret[s].push(cnts[s][b] > 0 ? sums[s][b] / cnts[s][b] : null);
+		}
+	    }
+	    return ret;
+	}
 	if (mode != "day" && mode != "month") {
 	    return data;
 	}
@@ -937,11 +1027,76 @@ function initSpeedKetchup() {
 	    new Date(date.getFullYear(), date.getMonth() + 1, 1);
 	return next.getTime() / 1e3 - 0.001;
     }
+    // which raw results are behind the averaged points in the visible x range
+    let raw_profile_x = [];
+    function raw_in_view(minx, maxx) {
+	if (profile_span()) {
+	    return i => in_time_interval(data[0][i]) && raw_profile_x[i] >= minx && raw_profile_x[i] <= maxx;
+	}
+	let end = raw_x_end(maxx);
+	return i => data[0][i] >= minx && data[0][i] <= end;
+    }
     function set_chart_data(mode) {
-	let a = get_averaged_data(data, mode);
+	raw_profile_x = profile_span() ? data[0].map(ts => profile_x(ts, mode)) : [];
+	let src = data;
+	if (profile_span() && time_interval) {
+	    // the time of day and week averages only cover the picked interval
+	    let idxs = data[0].map((ts, i) => i).filter(i => in_time_interval(data[0][i]));
+	    src = data.map(series => idxs.map(i => series[i]));
+	}
+	let a = get_averaged_data(src, mode);
 	[d[0], d[1], d[2]] = [a[0], a[4], a[5]];
 	[d2[0], d2[1], d2[2], d2[3]] = [a[0], a[2], a[3], a[1]];
     }
+    // the picked [from, to] time interval of the raw results, null for all
+    // of them, zooming the raw, day or month charts picks it, and it is
+    // kept when changing to another mode
+    let time_interval = null;
+    function in_time_interval(ts) {
+	return time_interval == null || (ts >= time_interval[0] && ts <= time_interval[1]);
+    }
+    // the x range the charts were last set to when the mode changed, it
+    // doesn't change the picked interval
+    let restored_x = null;
+    function on_x_range(r) {
+	if (profile_span() || no_data || d[0].length == 0) {
+	    return;
+	}
+	if (restored_x && r[0] == restored_x[0] && r[1] == restored_x[1]) {
+	    return;
+	}
+	if (r[0] <= d[0][0] && r[1] >= d[0][d[0].length - 1]) {
+	    time_interval = null;
+	}
+	else {
+	    time_interval = [r[0], raw_x_end(r[1])];
+	}
+	show_time_interval();
+    }
+    let interval_fmt = uPlot.fmtDate("{YYYY}-{MMM}-{D} {H}:{mm}");
+    function show_time_interval() {
+	let cnt = data[0].filter(in_time_interval).length;
+	let text = cnt + " results";
+	if (cnt > 0) {
+	    let first = data[0].find(in_time_interval);
+	    let last = data[0].findLast(in_time_interval);
+	    text = interval_fmt(new Date(first * 1e3)) + " \u2013 " + interval_fmt(new Date(last * 1e3)) + ", " + text;
+	}
+	el("time_interval_text").textContent = (time_interval ? "" : "All: ") + text;
+	el("time_interval_clear").style.display = time_interval ? "" : "none";
+    }
+    // the start of the day or month ts falls in
+    function bucket_start(ts, mode) {
+	let date = new Date(ts * 1e3);
+	if (mode == "day") {
+	    return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime() / 1e3;
+	}
+	if (mode == "month") {
+	    return new Date(date.getFullYear(), date.getMonth(), 1).getTime() / 1e3;
+	}
+	return ts;
+    }
+
     let average_mode = "raw";
     try {
 	average_mode = localStorage.getItem("average") || "raw";
@@ -966,9 +1121,11 @@ function initSpeedKetchup() {
 
 	scales: {
 	    x: {
-		range: (_, min, max) => {
+		range: (u, min, max) => {
 //		    debug("scales x min:" + min + " max:" + max);
 		    let r = x_range(min, max);
+		    u.x_view = r;
+		    on_x_range(r);
 		    for (let i = 1; i < d.length; i++) {
 			aggregates[i] = get_aggregates_for_series(d, r[0], r[1], i);
 		    }
@@ -1017,7 +1174,11 @@ function initSpeedKetchup() {
 	drawOrder: ["series", "axes"],
 	scales: {
 	    x: {
-		range: (_, min, max) => x_range(min, max)
+		range: (u, min, max) => {
+		    u.x_view = x_range(min, max);
+		    on_x_range(u.x_view);
+		    return u.x_view;
+		}
 	    },
 	    y: {
 		range: (u, min, max) => y_range(u, min, max, rd2, latency_max_drop)
@@ -1057,12 +1218,33 @@ function initSpeedKetchup() {
 	    try {
 		localStorage.setItem("average", average_mode);
 	    } catch (e) {}
-	    set_chart_data(average_mode);
-	    dist1.invalidate();
-	    dist2.invalidate();
+	    apply_mode();
+	});
+    }
+    el("time_interval_clear").addEventListener("click", () => {
+	time_interval = null;
+	apply_mode();
+    });
+    show_time_interval();
+
+    // refills the charts for the current mode, keeping the picked interval
+    function apply_mode() {
+	set_chart_data(average_mode);
+	dist1.invalidate();
+	dist2.invalidate();
+	if (profile_span() || time_interval == null) {
+	    restored_x = null;
 	    chart1.setData(d);
 	    chart2.setData(d2);
-	});
+	}
+	else {
+	    restored_x = [bucket_start(time_interval[0], average_mode), time_interval[1]];
+	    for (let [chart, cd] of [[chart1, d], [chart2, d2]]) {
+		chart.setData(cd, false);
+		chart.setScale("x", { min: restored_x[0], max: restored_x[1] });
+	    }
+	}
+	show_time_interval();
     }
 
     window.addEventListener("resize", e => {
