@@ -460,7 +460,7 @@ function request(obj, cb) {
         }
     };
     req.timeout = 60 * 1000;
-    req.open("POST", "/status", true);
+    req.open("POST", "status", true);
     req.send(obj);
 }
 
@@ -591,7 +591,7 @@ function onClickStart() {
     debug("start");
     var req = new XMLHttpRequest();
     req.timeout = 10 * 1000;
-    req.open("POST", "/start", true);
+    req.open("POST", "start", true);
     req.send();
 }
 
@@ -600,7 +600,7 @@ function onClickStop() {
     debug("stop");
     var req = new XMLHttpRequest();
     req.timeout = 10 * 1000;
-    req.open("POST", "/stop", true);
+    req.open("POST", "stop", true);
     req.send();
 }
 */
