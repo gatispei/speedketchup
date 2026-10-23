@@ -47,6 +47,45 @@
       #average_selector input:checked + span {
 	  background-color: #ddd;
       }
+      /* the chart legends */
+      .u-legend {
+	  font-size: 12px;
+	  border-collapse: collapse;
+	  font-variant-numeric: tabular-nums;
+      }
+      .u-legend thead th {
+	  font-size: 11px;
+	  font-weight: normal;
+	  color: #888;
+	  text-align: right;
+	  padding: 2px 8px;
+	  border-bottom: 1px solid #8886;
+      }
+      .u-legend tbody th {
+	  text-align: left;
+	  padding: 2px 8px;
+      }
+      .u-legend tbody tr + tr {
+	  border-top: 1px solid #8883;
+      }
+      .u-legend td.u-value {
+	  text-align: right;
+	  padding: 2px 8px;
+      }
+      /* the time is the same for every series */
+      .u-legend td.u-value:nth-of-type(1) {
+	  color: #888;
+      }
+      .u-legend td.u-value:nth-of-type(2) {
+	  font-weight: bold;
+      }
+      /* the range and share are empty until hovering, keep their room */
+      .u-legend td.u-value:nth-of-type(6) {
+	  min-width: 7em;
+      }
+      .u-legend td.u-value:nth-of-type(7) {
+	  min-width: 3.5em;
+      }
       #results_table_wrap {
 	  overflow-x: auto;
 	  margin: 16px 0;
@@ -708,20 +747,40 @@ function initSpeedKetchup() {
     };
     function get_values_for_legend(data, aggs, series_idx, idx, u, dist) {
 	if (data[0].length == 0) {
-	    return { Time: "", Value: "", Min: "", Avg: "", Max: "", Range: "" };
+	    return { Time: "", Value: "", Min: "", Avg: "", Max: "", Range: "", Share: "" };
 	}
 	if (idx == null) {
 	    idx = data[0].length - 1;
 	}
 	let x = data[0][idx];
+	// the numbers of a column are padded to the same decimals over all the
+	// series, so that their decimal points line up
+	let numbers = s => [data[s][idx], aggs[s].min, aggs[s].avg, aggs[s].max].map(v => format3(v));
+	let all = [];
+	for (let s = 1; s < data.length; s++) {
+	    all.push(numbers(s));
+	}
+	let [value, min, avg, max] = numbers(series_idx).map((str, c) => pad_decimals(str, all.map(row => row[c])));
+	let [range, share] = get_range_for_legend(u, dist, series_idx);
 	return {
 	    Time: profile_span() ? format_profile_x(x, true) : (legendFmts[average_mode] || legendFmts.raw)(new Date(x * 1e3)),
-	    Value: format3(data[series_idx][idx]),
-	    Min: format3(aggs[series_idx].min),
-	    Avg: format3(aggs[series_idx].avg),
-	    Max: format3(aggs[series_idx].max),
-	    Range: get_range_for_legend(u, dist, series_idx),
+	    Value: value,
+	    Min: min,
+	    Avg: avg,
+	    Max: max,
+	    Range: range,
+	    Share: share,
 	};
+    }
+    // pads str with figure spaces to the most decimals in the column, the
+    // legend is plain text, so the padding can't be hidden digits
+    function pad_decimals(str, column) {
+	let decimals = s => s.includes(".") ? s.length - s.indexOf(".") - 1 : 0;
+	let pad = Math.max(0, ...column.filter(s => s != "").map(decimals)) - decimals(str);
+	if (str == "" || pad <= 0) {
+	    return str;
+	}
+	return str + (str.includes(".") ? "" : "\u2008") + "\u2007".repeat(pad);
     }
 
     // the chart the mouse is over, the range column only follows the cursor
@@ -753,7 +812,7 @@ function initSpeedKetchup() {
 	let bucket = get_bucket(u, dist);
 	let vals = dist ? dist.vals[series_idx] : null;
 	if (bucket == null || !vals || vals.length == 0) {
-	    return "";
+	    return ["", ""];
 	}
 	let [lo, hi] = bucket;
 	let cnt = 0;
@@ -762,7 +821,7 @@ function initSpeedKetchup() {
 		cnt += 1;
 	    }
 	}
-	return format3(lo) + "-" + format3(hi) + ": " + (cnt * 100 / vals.length).toFixed(1) + "%";
+	return [format3(lo) + "\u2013" + format3(hi), (cnt * 100 / vals.length).toFixed(1) + "%"];
     }
 
     // sorted raw series values that fall in the visible x range
@@ -919,6 +978,25 @@ function initSpeedKetchup() {
 	    return splits.map(x => format_profile_x(x, false));
 	};
     }
+    // the legend columns only ever grow, so the centered legend doesn't jump
+    // around while hovering, as the values change their widths
+    function lock_legend_widths(u) {
+	let head = u.root.querySelector(".u-legend thead tr");
+	if (!head) {
+	    return;
+	}
+	for (let th of head.cells) {
+	    let width = Math.ceil(th.getBoundingClientRect().width);
+	    if (width > (parseFloat(th.style.minWidth) || 0)) {
+		th.style.minWidth = width + "px";
+	    }
+	}
+    }
+    function unlock_legend_widths() {
+	for (let th of document.querySelectorAll(".u-legend thead th")) {
+	    th.style.minWidth = "";
+	}
+    }
     function set_band(dist, band) {
 	if (String(dist.band) != String(band)) {
 	    dist.band = band;
@@ -942,6 +1020,7 @@ function initSpeedKetchup() {
 		    set_band(get_dist_chart(), null);
 		});
 	    }],
+	    setLegend: [u => lock_legend_widths(u)],
 	    // the range column depends on the y position, which alone doesn't
 	    // update the legend
 	    setCursor: [u => {
@@ -1394,6 +1473,7 @@ function initSpeedKetchup() {
 
     // refills the charts for the current mode, keeping the picked interval
     function apply_mode() {
+	unlock_legend_widths();
 	set_chart_data(average_mode);
 	dist1.invalidate();
 	dist2.invalidate();
