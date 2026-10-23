@@ -93,6 +93,8 @@ in `./bin`.
 
 ### Container
 
+Official container image: [gatispei/speedketchup](https://hub.docker.com/r/gatispei/speedketchup) on Docker Hub.
+
 The image is `FROM scratch`: one layer holding the statically linked binary and
 an empty `/data` for the results volume, nothing else. No shell, no libc, no
 base image underneath. Built for linux/amd64, linux/386, linux/arm64 and
