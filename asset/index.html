@@ -609,9 +609,9 @@ function initSpeedKetchup() {
 	return aggs;
     };
     let legendFmt = uPlot.fmtDate("{YYYY}-{MMM}-{D} {H}:{mm}:{ss}");
-    function get_values_for_legend(data, aggs, series_idx, idx) {
+    function get_values_for_legend(data, aggs, series_idx, idx, u, dist) {
 	if (data[0].length == 0) {
-	    return { Time: "", Value: "", Min: "", Avg: "", Max: "" };
+	    return { Time: "", Value: "", Min: "", Avg: "", Max: "", Range: "" };
 	}
 	if (idx == null) {
 	    idx = data[0].length - 1;
@@ -623,12 +623,51 @@ function initSpeedKetchup() {
 	    Min: format3(aggs[series_idx].min),
 	    Avg: format3(aggs[series_idx].avg),
 	    Max: format3(aggs[series_idx].max),
+	    Range: get_range_for_legend(u, dist, series_idx),
 	};
     }
 
-    // gaussian kernel density estimate of the series values that fall in the
-    // visible x range, evaluated at the given points
-    function get_density_for_series(data, minx, maxx, series_idx, points) {
+    // the chart the mouse is over, the range column only follows the cursor
+    // of that chart, not the cursor synced from the other chart
+    let hovered_chart = null;
+    // the distribution bucket [lo, hi) at the cursor's y position, buckets
+    // start from 0 and are a round 1, 2 or 5 times a power of ten wide, about
+    // a hundredth of the visible y range
+    function get_bucket(u, dist) {
+	if (!dist || u != hovered_chart || u.cursor.top == null || u.cursor.top < 0) {
+	    return null;
+	}
+	let points = dist.points;
+	if (points.length < 2) {
+	    return null;
+	}
+	let raw = (points[points.length - 1] - points[0]) / 100;
+	let pow = Math.pow(10, Math.floor(Math.log10(raw)));
+	let m = raw / pow;
+	let step = (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * pow;
+	let k = Math.floor(Math.max(u.posToVal(u.cursor.top, "y"), 0) / step);
+	return [k * step, (k + 1) * step];
+    }
+    // the distribution bucket at the cursor's y position and the percentage
+    // of the visible results that fall in it
+    function get_range_for_legend(u, dist, series_idx) {
+	let bucket = get_bucket(u, dist);
+	let vals = dist ? dist.vals[series_idx] : null;
+	if (bucket == null || !vals || vals.length == 0) {
+	    return "";
+	}
+	let [lo, hi] = bucket;
+	let cnt = 0;
+	for (let v of vals) {
+	    if (v >= lo && v < hi) {
+		cnt += 1;
+	    }
+	}
+	return format3(lo) + "-" + format3(hi) + ": " + (cnt * 100 / vals.length).toFixed(1) + "%";
+    }
+
+    // sorted series values that fall in the visible x range
+    function get_visible_values(data, minx, maxx, series_idx) {
 	let vals = [];
 	for (let i in data[0]) {
 	    if (data[0][i] < minx) {
@@ -642,6 +681,12 @@ function initSpeedKetchup() {
 		vals.push(val);
 	    }
 	}
+	return vals.sort((a, b) => a - b);
+    }
+
+    // gaussian kernel density estimate of the given sorted values, evaluated
+    // at the given points
+    function get_density(vals, points) {
 	let density = points.map(() => 0);
 	if (vals.length == 0) {
 	    return density;
@@ -651,7 +696,6 @@ function initSpeedKetchup() {
 	// silverman's rule of thumb, the interquartile range keeps extreme
 	// results from smoothing out everything, never narrower than the step
 	// between points
-	vals.sort((a, b) => a - b);
 	let iqr = vals[Math.floor((vals.length - 1) * 0.75)] - vals[Math.floor((vals.length - 1) * 0.25)];
 	let spread = iqr > 0 ? Math.min(sd, iqr / 1.34) : sd;
 	let step = (points[points.length - 1] - points[0]) / (points.length - 1);
@@ -678,6 +722,25 @@ function initSpeedKetchup() {
 	    cursor: { show: false },
 	    legend: { show: false },
 	    drawOrder: ["series", "axes"],
+	    hooks: {
+		// shade the bucket shown in the main chart's legend range column
+		draw: [u => {
+		    if (!u.band) {
+			return;
+		    }
+		    let y0 = u.valToPos(u.band[0], "x", true);
+		    let y1 = u.valToPos(u.band[1], "x", true);
+		    let top = Math.max(Math.min(y0, y1), u.bbox.top);
+		    let bottom = Math.min(Math.max(y0, y1), u.bbox.top + u.bbox.height);
+		    if (bottom <= top) {
+			return;
+		    }
+		    u.ctx.save();
+		    u.ctx.fillStyle = "#8886";
+		    u.ctx.fillRect(u.bbox.left, top, u.bbox.width, Math.max(bottom - top, 1));
+		    u.ctx.restore();
+		}],
+	    },
 	    scales: {
 		x: {
 		    time: false,
@@ -709,8 +772,11 @@ function initSpeedKetchup() {
 		{ ...axis[0], side: 2, space: 50, values: (u, splits) => splits.map(() => "") },
 	    ],
 	};
-	let points = [];
-	let chart = new uPlot(dist_opts, [points, ...main_opts.series.slice(1).map(() => [])], el(el_id));
+	let chart = new uPlot(dist_opts, [[], ...main_opts.series.slice(1).map(() => [])], el(el_id));
+	// the points the density is evaluated at and the visible values of each
+	// series, the main chart's legend uses these too
+	chart.points = [];
+	chart.vals = [];
 	let last = null;
 	// called from the main chart's draw hook
 	chart.update = function(main_chart, d) {
@@ -725,17 +791,27 @@ function initSpeedKetchup() {
 	    last = key;
 	    range = [ymin, ymax];
 	    const n = 100;
-	    points = [];
+	    let points = [];
 	    for (let i = 0; i < n; i++) {
 		points.push(ymin + (ymax - ymin) * i / (n - 1));
 	    }
 	    let dist = [points];
+	    let vals = [null];
 	    for (let i = 1; i < d.length; i++) {
-		dist.push(get_density_for_series(d, xmin, xmax, i, points));
+		vals.push(get_visible_values(d, xmin, xmax, i));
+		dist.push(get_density(vals[i], points));
 	    }
+	    chart.points = points;
+	    chart.vals = vals;
 	    chart.setData(dist);
 	};
 	return chart;
+    }
+    function set_band(dist, band) {
+	if (String(dist.band) != String(band)) {
+	    dist.band = band;
+	    dist.redraw(false);
+	}
     }
     function dist_hooks(get_dist_chart, d) {
 	return {
@@ -743,6 +819,22 @@ function initSpeedKetchup() {
 	    setSeries: [(u, sidx, opts) => {
 		if (sidx != null && opts && opts.show != null) {
 		    get_dist_chart().setSeries(sidx, { show: opts.show });
+		}
+	    }],
+	    init: [u => {
+		u.over.addEventListener("mouseenter", () => { hovered_chart = u; });
+		u.over.addEventListener("mouseleave", () => {
+		    hovered_chart = null;
+		    u.setLegend();
+		    set_band(get_dist_chart(), null);
+		});
+	    }],
+	    // the range column depends on the y position, which alone doesn't
+	    // update the legend
+	    setCursor: [u => {
+		if (u == hovered_chart) {
+		    u.setLegend(undefined, false);
+		    set_band(get_dist_chart(), get_bucket(u, get_dist_chart()));
 		}
 	    }],
 	};
@@ -797,13 +889,13 @@ function initSpeedKetchup() {
 		label: "Download (Mbps)",
 		fill: "rgba(255, 0, 0, 0.7)",
 		...seriesOpts,
-		values: (u, sidx, idx) => { return get_values_for_legend(d, aggregates, sidx, idx); }
+		values: (u, sidx, idx) => { return get_values_for_legend(d, aggregates, sidx, idx, u, dist1); }
 	    },
 	    {
 		label: "Upload (Mbps)",
 		fill: "rgba(0, 0, 255, 0.7)",
 		...seriesOpts,
-		values: (u, sidx, idx) => { return get_values_for_legend(d, aggregates, sidx, idx); }
+		values: (u, sidx, idx) => { return get_values_for_legend(d, aggregates, sidx, idx, u, dist1); }
 	    }
 	],
 	axes: axis,
@@ -831,19 +923,19 @@ function initSpeedKetchup() {
 		label: "Latency While Downloading (ms)",
 		fill: "rgba(255, 0, 0, 0.5)",
 		...seriesOpts,
-		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx); }
+		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx, u, dist2); }
 	    },
 	    {
 		label: "Latency While Uploading (ms)",
 		fill: "rgba(0, 0, 255, 0.5)",
 		...seriesOpts,
-		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx); }
+		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx, u, dist2); }
 	    },
 	    {
 		label: "Latency When Idle (ms)",
 		fill: "rgba(50, 150, 50, 1)",
 		...seriesOpts,
-		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx); }
+		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx, u, dist2); }
 	    },
 	],
 	axes: axis,
