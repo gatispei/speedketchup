@@ -1280,7 +1280,8 @@ where CB: FnMut(&[u8]) -> bool {
 }
 
 
-const ASSET_INDEX_HTML: &[u8] = include_bytes!("../asset/index.html");
+// build.rs minifies the scripts in it
+const ASSET_INDEX_HTML: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/index.html"));
 const ASSET_FAVICON_SVG: &[u8] = include_bytes!("../asset/favicon.svg");
 const ASSET_UPLOT_JS: &[u8] = include_bytes!("../asset/uplot.js");
 const ASSET_UPLOT_CSS: &[u8] = include_bytes!("../asset/uplot.css");

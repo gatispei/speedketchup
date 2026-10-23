@@ -13,7 +13,11 @@ PLATFORMS   := linux/amd64,linux/386,linux/arm64,linux/arm/v6
 IMAGE_ARCHS := amd64=x64 386=i686 arm64=aarch64 arm=arm
 
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-SOURCES := Makefile Cargo.toml $(wildcard Cargo.lock src/*.rs asset/*)
+SOURCES := Makefile Cargo.toml build.rs $(wildcard Cargo.lock src/*.rs asset/*)
+
+# build.rs minifies the scripts in asset/index.html, release builds require it
+ESBUILD_VERSION := 0.25.10
+ESBUILD ?= npx --yes esbuild@$(ESBUILD_VERSION)
 
 CARGO   := cargo +$(NIGHTLY) build -Z build-std=std,panic_abort --release
 RFLAGS  := -Zlocation-detail=none -Zunstable-options -Cpanic=immediate-abort
@@ -74,6 +78,7 @@ bin:
 	mkdir -p $@
 
 bin/speedketchup-%: $(SOURCES) | bin
+	SPEEDKETCHUP_MINIFY=1 ESBUILD="$(ESBUILD)" \
 	RUSTFLAGS="$(RFLAGS) $($*_RFLAGS)" $(CARGO) --target $($*_TARGET)
 	cp $(CARGO_TARGET_DIR)/$($*_TARGET)/release/$(or $($*_BIN),speedketchup) $@
 	$($*_STRIP) $@
@@ -92,7 +97,8 @@ bin/speedketchup-%-upx.exe: bin/speedketchup-%.exe
 
 build-image:
 	$(CONTAINER) build -t $(BUILD_IMAGE) -f build/Dockerfile \
-		--build-arg RUST_NIGHTLY=$(NIGHTLY) build
+		--build-arg RUST_NIGHTLY=$(NIGHTLY) \
+		--build-arg ESBUILD_VERSION=$(ESBUILD_VERSION) build
 
 image: $(addprefix bin/speedketchup-,x64 i686 aarch64 arm)
 	rm -rf bin/docker
@@ -141,6 +147,7 @@ clean:
 ifeq ($(SPEEDKETCHUP_IN_CONTAINER),1)
 
 export CARGO_TARGET_DIR := target-linux
+ESBUILD := esbuild
 
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER := x86_64-linux-gnu-gcc
 export CARGO_TARGET_I686_UNKNOWN_LINUX_MUSL_LINKER   := i686-linux-gnu-gcc

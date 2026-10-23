@@ -63,4 +63,16 @@ RUN curl -sSf https://sh.rustup.rs | sh -s -- -y \
 		x86_64-pc-windows-gnu \
 	&& rustc --version
 
+# minifies the scripts in asset/index.html, see build.rs
+ARG ESBUILD_VERSION=0.25.10
+RUN set -eux; \
+	case "$(dpkg --print-architecture)" in \
+		arm64) esbuild_arch=arm64 ;; \
+		amd64) esbuild_arch=x64 ;; \
+		*) echo "unsupported build host architecture" >&2; exit 1 ;; \
+	esac; \
+	curl -fsSL "https://registry.npmjs.org/@esbuild/linux-${esbuild_arch}/-/linux-${esbuild_arch}-${ESBUILD_VERSION}.tgz" \
+		| tar -xz -C /usr/local/bin --strip-components=2 package/bin/esbuild; \
+	esbuild --version
+
 WORKDIR /src
