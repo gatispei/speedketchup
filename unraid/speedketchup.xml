@@ -23,6 +23,7 @@ A single statically linked binary of a few hundred kilobytes, the image has noth
     <Date>2026-10-23</Date>
     <Changes>
 ### 2026-10-23
+- speedketchup 0.4.0: InfluxDB and MQTT with Home Assistant discovery settings.
 - Initial template for speedketchup 0.3.0.
     </Changes>
     <Config Name="WebUI" Target="8080" Default="8080" Mode="tcp" Description="Web page with the test results." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
@@ -33,4 +34,9 @@ A single statically linked binary of a few hundred kilobytes, the image has noth
     <Config Name="Upload duration" Target="SPEEDKETCHUP_UPLOAD_DURATION" Default="10" Description="Seconds to test the upload speed, 0 skips the upload test." Type="Variable" Display="advanced" Required="true" Mask="false">10</Config>
     <Config Name="Download connections" Target="SPEEDKETCHUP_DOWNLOAD_CONNECTIONS" Default="8" Description="Parallel connections for the download test." Type="Variable" Display="advanced" Required="true" Mask="false">8</Config>
     <Config Name="Upload connections" Target="SPEEDKETCHUP_UPLOAD_CONNECTIONS" Default="8" Description="Parallel connections for the upload test." Type="Variable" Display="advanced" Required="true" Mask="false">8</Config>
+    <Config Name="InfluxDB write url" Target="SPEEDKETCHUP_INFLUX_URL" Default="" Description="InfluxDB line protocol write url to also write every result to, http only, eg http://influxdb:8086/api/v2/write?org=home&amp;bucket=speedketchup. Empty writes nowhere." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+    <Config Name="InfluxDB token" Target="SPEEDKETCHUP_INFLUX_TOKEN" Default="" Description="Token for the InfluxDB write url." Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+    <Config Name="MQTT broker" Target="SPEEDKETCHUP_MQTT" Default="" Description="MQTT broker host[:port] to also publish every result to, with Home Assistant discovery, plain mqtt only, port 1883 by default. Empty publishes nowhere." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+    <Config Name="MQTT user" Target="SPEEDKETCHUP_MQTT_USER" Default="" Description="User name for the MQTT broker." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+    <Config Name="MQTT password" Target="SPEEDKETCHUP_MQTT_PASSWORD" Default="" Description="Password for the MQTT broker." Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
 </Container>
