@@ -13,14 +13,14 @@ You can use speedketchup for one-off test or keep it running continuously to spo
 Prebuilt executables for some platforms:
 | platform | executable | [upx](https://upx.github.io/)-compressed executable |
 |-|-|-|
-|linux x86_64|[424k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64)|[188k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx)|
-|linux i686|[419k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-i686)|[193k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-i686-upx)|
-|linux aarch64|[395k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-aarch64)|[181k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-aarch64-upx)|
-|linux arm|[419k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm)|[188k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm-upx)|
-|linux mips|[592k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-mips)|[215k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-mips-upx)|
-|linux mipsel|[592k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-mipsel)|[219k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-mipsel-upx)|
-|windows x86_64|[400k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64.exe)|[174k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx.exe)|
-|macos universal (x86_64 + aarch64)|[616k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-macos)|
+|linux x86_64|[452k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64)|[197k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx)|
+|linux i686|[451k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-i686)|[202k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-i686-upx)|
+|linux aarch64|[460k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-aarch64)|[189k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-aarch64-upx)|
+|linux arm|[451k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm)|[196k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-arm-upx)|
+|linux mips|[592k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-mips)|[224k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-mips-upx)|
+|linux mipsel|[592k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-mipsel)|[227k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-mipsel-upx)|
+|windows x86_64|[431k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64.exe)|[182k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-x64-upx.exe)|
+|macos universal (x86_64 + aarch64)|[682k](https://github.com/gatispei/speedketchup-files/blob/main/bin/speedketchup-macos)|
 
 ### Builtin web server
 ![speedketchup webserver](https://github.com/gatispei/speedketchup-files/blob/main/img/ketchup.png "SpeedKetchup webserver")
@@ -28,10 +28,15 @@ Prebuilt executables for some platforms:
 ### Features
 
 - automatic speedtest server selection based on latency or run against specific speedtest server
-- uses HTTP protocol for all operations on network
+- uses HTTP protocol for all operations on network, skips speedtest servers that only serve over HTTPS
 - tiny list of rust dependencies: [std](https://doc.rust-lang.org/std/index.html), [libc](https://crates.io/crates/libc), [roxmltree](https://crates.io/crates/roxmltree) + [xmlparser](https://crates.io/crates/xmlparser)
 - results are stored in human readable [.csv](https://en.wikipedia.org/wiki/Comma-separated_values), other storage backends incoming
-- builtin web-server to display results with [uPlot](https://github.com/leeoniya/uPlot) chart
+- builtin web-server to display results with [uPlot](https://github.com/leeoniya/uPlot) charts:
+  - speed and latency charts, each with a distribution chart of the displayed results next to it
+  - every result, or daily, monthly, time of day or time of week averages
+  - legend with min/avg/max of the displayed results and the share of results in the hovered value range
+  - sortable table of the results with every recorded detail, including errors
+  - updates in place when a test finishes, keeping the zoom and the picked view
 - all web assets are included in the program binary
 - linux version statically linked with [musl](https://musl.libc.org/) - not dependent on system [libc](https://en.wikipedia.org/wiki/C_standard_library), essentially a single binary container
 - acts as a speedtest server itself. Not registered with official speedtest.net, but can be passed as speedtest server to supporting clients
