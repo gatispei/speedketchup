@@ -60,7 +60,7 @@ linux_BINS   := $(addprefix bin/speedketchup-,$(LINUX) $(WINDOWS))
 linux_PACKED := $(addprefix bin/speedketchup-,$(addsuffix -upx,$(LINUX)) x64-upx.exe)
 macos_BINS   := $(addprefix bin/speedketchup-,$(MACOS))
 
-.PHONY: build release macos linux image build-image push overview clean smoke
+.PHONY: build release macos linux image qpkg build-image push overview clean smoke
 .DEFAULT_GOAL := build
 
 build:
@@ -102,6 +102,10 @@ image: $(addprefix bin/speedketchup-,x64 i686 aarch64 arm)
 		cp bin/speedketchup-$${m#*=} bin/docker/$${m%%=*}/speedketchup; \
 	done
 	$(IMAGE_BUILD) --platform $(PLATFORMS) -t $(IMAGE):$(VERSION) -t $(IMAGE):latest .
+
+# QNAP packages for x86_64, arm_64 and arm-x41, built with QDK in a debian container
+qpkg: $(addprefix bin/speedketchup-,x64 aarch64 arm)
+	$(CONTAINER) run --rm -v "$(CURDIR):/src" -w /src docker.io/library/debian:trixie sh qnap/build.sh $(VERSION)
 
 push: image
 	@case "$(IMAGE)" in \

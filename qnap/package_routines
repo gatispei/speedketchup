@@ -1,0 +1,4 @@
+######################################################################
+# The QDK defaults are enough, the results stay in data/ in the QPKG
+# directory across upgrades and speedketchup.conf is a QPKG_CONFIG file
+######################################################################
