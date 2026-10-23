@@ -530,9 +530,43 @@ function initSpeedKetchup() {
 	}
 	return [min, max];
     }
-    function y_range(min, max) {
+    // the top of the latency y axis ignores this fraction of the highest
+    // visible values, so a few extreme results don't squash the rest of the
+    // chart, nothing is dropped until there are enough values to drop a whole one
+    const latency_max_drop = 0.01;
+    function y_range(u, min, max, max_drop = 0) {
 	if (no_data) {
 	    return [0, 100];
+	}
+	if (max_drop == 0) {
+	    return uPlot.rangeNum(min, max, 0.1, true);
+	}
+	// the x scale is not known yet while the chart is created
+	let minx = u.scales.x.min ?? -Infinity;
+	let maxx = u.scales.x.max ?? Infinity;
+	let vals = [];
+	for (let s = 1; s < u.series.length; s++) {
+	    if (!u.series[s].show) {
+		continue;
+	    }
+	    for (let i in u.data[0]) {
+		if (u.data[0][i] < minx) {
+		    continue;
+		}
+		if (u.data[0][i] > maxx) {
+		    break;
+		}
+		if (u.data[s][i] != null) {
+		    vals.push(u.data[s][i]);
+		}
+	    }
+	}
+	if (vals.length > 0) {
+	    vals.sort((a, b) => a - b);
+	    let trimmed = vals[vals.length - 1 - Math.floor(vals.length * max_drop)];
+	    if (trimmed > min) {
+		max = trimmed;
+	    }
 	}
 	return uPlot.rangeNum(min, max, 0.1, true);
     }
@@ -614,9 +648,14 @@ function initSpeedKetchup() {
 	}
 	let avg = vals.reduce((a, b) => a + b, 0) / vals.length;
 	let sd = Math.sqrt(vals.reduce((a, b) => a + (b - avg) * (b - avg), 0) / vals.length);
-	// silverman's rule of thumb, but never narrower than the step between points
+	// silverman's rule of thumb, the interquartile range keeps extreme
+	// results from smoothing out everything, never narrower than the step
+	// between points
+	vals.sort((a, b) => a - b);
+	let iqr = vals[Math.floor((vals.length - 1) * 0.75)] - vals[Math.floor((vals.length - 1) * 0.25)];
+	let spread = iqr > 0 ? Math.min(sd, iqr / 1.34) : sd;
 	let step = (points[points.length - 1] - points[0]) / (points.length - 1);
-	let h = Math.max(1.06 * sd * Math.pow(vals.length, -0.2), step);
+	let h = Math.max(0.9 * spread * Math.pow(vals.length, -0.2), step);
 	let norm = 1 / (vals.length * h * Math.sqrt(2 * Math.PI));
 	for (let p in points) {
 	    let sum = 0;
@@ -748,7 +787,7 @@ function initSpeedKetchup() {
 		}
 	    },
 	    y: {
-		range: (_, min, max) => y_range(min, max)
+		range: (u, min, max) => y_range(u, min, max)
 	    },
 	},
 
@@ -783,7 +822,7 @@ function initSpeedKetchup() {
 		range: (_, min, max) => x_range(min, max)
 	    },
 	    y: {
-		range: (_, min, max) => y_range(min, max)
+		range: (u, min, max) => y_range(u, min, max, latency_max_drop)
 	    },
 	},
 	series: [
