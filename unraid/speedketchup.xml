@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<Container version="2">
+    <Name>speedketchup</Name>
+    <Repository>gatispei/speedketchup</Repository>
+    <Registry>https://hub.docker.com/r/gatispei/speedketchup</Registry>
+    <Network>bridge</Network>
+    <Privileged>false</Privileged>
+    <Support>https://github.com/gatispei/speedketchup/issues</Support>
+    <Project>https://speedketchup.com</Project>
+    <ReadMe>https://github.com/gatispei/speedketchup#readme</ReadMe>
+    <Overview>Runs an internet speed test every 10 minutes against the nearest speedtest.net server, stores the results in a csv file and shows them in a builtin web page.
+
+The web page has speed and latency charts with distributions of the displayed results, daily, monthly, time of day and time of week averages, and a sortable table of every result.
+
+A single statically linked binary of a few hundred kilobytes, the image has nothing else in it.</Overview>
+    <Category>Network:Other Tools:Utilities</Category>
+    <ExtraSearchTerms>speedtest speed test internet bandwidth latency ping monitoring</ExtraSearchTerms>
+    <License>GPLv2</License>
+    <Screenshot>https://raw.githubusercontent.com/gatispei/speedketchup-files/main/img/ketchup.png</Screenshot>
+    <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+    <TemplateURL>https://raw.githubusercontent.com/gatispei/speedketchup/main/unraid/speedketchup.xml</TemplateURL>
+    <Icon>https://raw.githubusercontent.com/gatispei/speedketchup-files/main/img/icon.png</Icon>
+    <Date>2026-10-23</Date>
+    <Changes>
+### 2026-10-23
+- Initial template for speedketchup 0.3.0.
+    </Changes>
+    <Config Name="WebUI" Target="8080" Default="8080" Mode="tcp" Description="Web page with the test results." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+    <Config Name="Results" Target="/data" Default="/mnt/user/appdata/speedketchup" Mode="rw" Description="Where the test results csv file is stored." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/speedketchup</Config>
+    <Config Name="Test interval" Target="SPEEDKETCHUP_INTERVAL" Default="10" Description="Minutes between the speed tests." Type="Variable" Display="always" Required="true" Mask="false">10</Config>
+    <Config Name="Speedtest server" Target="SPEEDKETCHUP_SERVER" Default="" Description="Speedtest server host[:port] to always test against, empty picks the server with the lowest latency for every test." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+    <Config Name="Download duration" Target="SPEEDKETCHUP_DOWNLOAD_DURATION" Default="10" Description="Seconds to test the download speed, 0 skips the download test." Type="Variable" Display="advanced" Required="true" Mask="false">10</Config>
+    <Config Name="Upload duration" Target="SPEEDKETCHUP_UPLOAD_DURATION" Default="10" Description="Seconds to test the upload speed, 0 skips the upload test." Type="Variable" Display="advanced" Required="true" Mask="false">10</Config>
+    <Config Name="Download connections" Target="SPEEDKETCHUP_DOWNLOAD_CONNECTIONS" Default="8" Description="Parallel connections for the download test." Type="Variable" Display="advanced" Required="true" Mask="false">8</Config>
+    <Config Name="Upload connections" Target="SPEEDKETCHUP_UPLOAD_CONNECTIONS" Default="8" Description="Parallel connections for the upload test." Type="Variable" Display="advanced" Required="true" Mask="false">8</Config>
+</Container>

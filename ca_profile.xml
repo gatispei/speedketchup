@@ -1,0 +1,10 @@
+<CommunityApplications>
+  <Profile>
+[SpeedKetchup](https://speedketchup.com) is a tiny self-contained internet speed monitor: it runs a speed test every few minutes, stores the results and shows them with charts in its own web page.
+
+Questions and bug reports go to the [GitHub issues](https://github.com/gatispei/speedketchup/issues).
+  </Profile>
+  <Icon>https://raw.githubusercontent.com/gatispei/speedketchup-files/main/img/icon.svg</Icon>
+  <WebPage>https://speedketchup.com</WebPage>
+  <Photo>https://raw.githubusercontent.com/gatispei/speedketchup-files/main/img/ketchup.png</Photo>
+</CommunityApplications>
