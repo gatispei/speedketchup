@@ -194,6 +194,8 @@ struct SpeedTestState {
     test_requested: Option<bool>,
     // the server thread that is current, an older one stops
     server_id: u32,
+    // the address and port it listens on, the settings may want another
+    serving: Option<(String, u16)>,
 }
 
 #[allow(dead_code)]
@@ -1971,11 +1973,20 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 }
 
 //use std::os::fd::AsRawFd;
+// the status of a speedketchup answers on the port, not some other program
+fn is_speedketchup(port: u16) -> bool {
+    match http_get(&format!("127.0.0.1:{port}"), "/status") {
+	Ok(resp) => http_status_code(&resp).ok() == Some(200) && memmem(&resp, b"{ \"state\":").is_some(),
+	Err(_) => false,
+    }
+}
+
 fn start_server(listener: std::net::TcpListener, state: &Arc<Mutex<SpeedTestState>>) {
     let mut id = 0;
     if let Ok(mut state) = state.lock() {
 	state.server_id += 1;
 	id = state.server_id;
+	state.serving = Some((state.config.listen_address.clone(), state.config.listen_port));
     }
     let state = state.clone();
     let _ = std::thread::Builder::new().name("server".to_string()).spawn(move || {
@@ -2125,6 +2136,59 @@ fn config_from_vars(config: &mut SpeedTestConfig, var: &dyn Fn(&str) -> Option<S
     }
 }
 
+// the command line options and the settings they set
+const OPTIONS: &[(&str, &str, &str)] = &[
+    ("-i", "--interval", "SPEEDKETCHUP_INTERVAL"),
+    ("-f", "--file", "SPEEDKETCHUP_FILE"),
+    ("-a", "--address", "SPEEDKETCHUP_ADDRESS"),
+    ("-p", "--port", "SPEEDKETCHUP_PORT"),
+    ("-s", "--server", "SPEEDKETCHUP_SERVER"),
+    ("-dd", "--download-duration", "SPEEDKETCHUP_DOWNLOAD_DURATION"),
+    ("-dc", "--download-connections", "SPEEDKETCHUP_DOWNLOAD_CONNECTIONS"),
+    ("-ud", "--upload-duration", "SPEEDKETCHUP_UPLOAD_DURATION"),
+    ("-uc", "--upload-connections", "SPEEDKETCHUP_UPLOAD_CONNECTIONS"),
+    ("-iu", "--influx-url", "SPEEDKETCHUP_INFLUX_URL"),
+    ("-it", "--influx-token", "SPEEDKETCHUP_INFLUX_TOKEN"),
+    ("-mq", "--mqtt", "SPEEDKETCHUP_MQTT"),
+    ("-mu", "--mqtt-user", "SPEEDKETCHUP_MQTT_USER"),
+    ("-mp", "--mqtt-password", "SPEEDKETCHUP_MQTT_PASSWORD"),
+];
+
+// the settings from the command line, kept for the app to read the
+// settings again after its settings file changes
+static ARGS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+fn parse_args() {
+    let mut vars = vec!();
+    let mut it = std::env::args().skip(1);
+    while let Some(arg) = it.next() {
+	match arg.as_str() {
+	    "-h" | "--help" => exit(HELP, 0),
+	    "-v" | "--version" => exit(PKG_VERSION, 0),
+	    // the process serial number older macOS passes to apps opened in the Finder
+	    x if x.starts_with("-psn_") => (),
+	    x => match OPTIONS.iter().find(|(short, long, _)| x == *short || x == *long) {
+		Some((_, _, name)) => match it.next() {
+		    Some(value) => vars.push((name.to_string(), value)),
+		    None => exit(&format!("no value given for {x}"), -1),
+		},
+		None => exit(&format!("unknown arg '{x}'"), -1),
+	    },
+	}
+    }
+    let _ = ARGS.set(vars);
+}
+
+// one setting, from the first of the command line, the environment and the
+// app settings file that has it, an empty value is the same as not set
+fn setting(name: &str, file: &[(String, String)]) -> Option<String> {
+    let find = |vars: &[(String, String)]| vars.iter().rev().find(|(n, _)| n == name).map(|(_, v)| v.clone());
+    let set = |v: &String| v.len() > 0;
+    find(ARGS.get().map(|v| v.as_slice()).unwrap_or(&[])).filter(set)
+	.or_else(|| std::env::var(name).ok().filter(set))
+	.or_else(|| find(file).filter(set))
+}
+
 fn default_config() -> SpeedTestConfig {
     SpeedTestConfig {
 	test_interval: 10,
@@ -2204,145 +2268,18 @@ fn main() {
     let app = menubar::is_app();
 #[cfg(not(target_os = "macos"))]
     let app = false;
+    parse_args();
 #[cfg(target_os = "macos")]
     if app {
-	config = menubar::app_defaults(config);
+	config = menubar::app_config();
     }
-    // the environment over the app settings file
-#[cfg(target_os = "macos")]
-    let settings = if app { menubar::settings() } else { vec!() };
-#[cfg(not(target_os = "macos"))]
-    let settings: Vec<(String, String)> = vec!();
-    let var = |name: &str| std::env::var(name).ok().or_else(|| settings.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()));
-    if let Err(e) = config_from_vars(&mut config, &var) {
-	if !app {
+    if !app {
+	if let Err(e) = config_from_vars(&mut config, &|name: &str| setting(name, &[])) {
 	    exit(&e, -1);
 	}
-	// the app has no terminal to say it in, its menu shows it instead
-#[cfg(target_os = "macos")]
-	{
-	    pr!("{e}, using the default");
-	    menubar::set_settings_error(Some(e));
+	if let Err(e) = check_config(&config) {
+	    exit(&e, -1);
 	}
-    }
-
-    let args = std::env::args().collect::<Vec<_>>();
-    let mut it = args.iter();
-    it.next();
-    while let Some(arg) = it.next() {
-	match arg.as_str() {
-	    "-h" | "--help" => exit(HELP, 0),
-	    "-v" | "--version" => exit(PKG_VERSION, 0),
-	    "-i" | "--interval" => {
-		config.test_interval = match it.next() {
-		    Some(x) => match x.parse() {
-			Ok(i) => i,
-			Err(_) => exit("bad interval", -1),
-		    },
-		    None => exit("no interval given", -1),
-		}
-	    },
-	    "-f" | "--file" => {
-		config.store_filename = match it.next() {
-		    Some(x) => x.clone(),
-		    None => exit("no filename given", -1),
-		}
-	    },
-	    "-a" | "--address" => {
-		config.listen_address = match it.next() {
-		    Some(x) => x.clone(),
-		    None => exit("no address given", -1),
-		}
-	    },
-	    "-p" | "--port" => {
-		config.listen_port = match it.next() {
-		    Some(x) => match x.parse() {
-			Ok(i) => i,
-			Err(_) => exit("bad port", -1),
-		    },
-		    None => exit("no port given", -1),
-		}
-	    },
-	    "-s" | "--server" => {
-		config.server_host = match it.next() {
-		    Some(x) => Some(server_with_port(x)),
-		    None => exit("no server given", -1),
-		}
-	    },
-	    "-dd" | "--download-duration" => {
-		config.download_duration = match it.next() {
-		    Some(x) => match x.parse() {
-			Ok(i) => i,
-			Err(_) => exit("bad duration", -1),
-		    },
-		    None => exit("no duration given", -1),
-		}
-	    },
-	    "-dc" | "--download-connections" => {
-		config.download_connections = match it.next() {
-		    Some(x) => match x.parse() {
-			Ok(i) => i,
-			Err(_) => exit("bad number", -1),
-		    },
-		    None => exit("no number given", -1),
-		}
-	    },
-	    "-ud" | "--upload-duration" => {
-		config.upload_duration = match it.next() {
-		    Some(x) => match x.parse() {
-			Ok(i) => i,
-			Err(_) => exit("bad duration", -1),
-		    },
-		    None => exit("no duration given", -1),
-		}
-	    },
-	    "-uc" | "--upload-connections" => {
-		config.upload_connections = match it.next() {
-		    Some(x) => match x.parse() {
-			Ok(i) => i,
-			Err(_) => exit("bad number", -1),
-		    },
-		    None => exit("no number given", -1),
-		}
-	    },
-	    "-iu" | "--influx-url" => {
-		config.influx_url = match it.next() {
-		    Some(x) => Some(x.clone()),
-		    None => exit("no influx url given", -1),
-		}
-	    },
-	    "-it" | "--influx-token" => {
-		config.influx_token = match it.next() {
-		    Some(x) => Some(x.clone()),
-		    None => exit("no influx token given", -1),
-		}
-	    },
-	    "-mq" | "--mqtt" => {
-		config.mqtt_host = match it.next() {
-		    Some(x) => Some(mqtt_with_port(x)),
-		    None => exit("no mqtt broker given", -1),
-		}
-	    },
-	    "-mu" | "--mqtt-user" => {
-		config.mqtt_user = match it.next() {
-		    Some(x) => Some(x.clone()),
-		    None => exit("no mqtt user given", -1),
-		}
-	    },
-	    "-mp" | "--mqtt-password" => {
-		config.mqtt_password = match it.next() {
-		    Some(x) => Some(x.clone()),
-		    None => exit("no mqtt password given", -1),
-		}
-	    },
-	    // the process serial number older macOS passes to apps opened in the Finder
-	    x if x.starts_with("-psn_") => (),
-	    _ => exit(&format!("unknown arg '{}'", arg), -1),
-	}
-    }
-
-    if let Err(e) = check_config(&config) {
-	exit(&e, -1);
     }
 
     std::env::set_var("RUST_BACKTRACE", "1");
@@ -2373,14 +2310,20 @@ fn main() {
     let at_login = app && std::env::var_os("SPEEDKETCHUP_LOGIN").is_some();
     let listener = match std::net::TcpListener::bind((config.listen_address.as_str(), config.listen_port)) {
 	// the app is running already, show its page instead
-	Err(_) if app && http_get(&format!("127.0.0.1:{}", config.listen_port), "/status").is_ok() => {
+	Err(_) if app && is_speedketchup(config.listen_port) => {
 	    if !at_login {
 		open_url(sk_url);
 	    }
 	    std::process::exit(0);
 	},
+	// another program has the port, the app tests without the web page and
+	// tries the port again, its menu says why
+	Err(e) if app => {
+	    pr!("could not bind {}:{}: {}", config.listen_address, config.listen_port, e);
+	    None
+	},
 	Err(e) => exit(&format!("could not bind {}:{}: {}", config.listen_address, config.listen_port, e), -1),
-	Ok(l) => l
+	Ok(l) => Some(l)
     };
     // the app opens it once it has started, and knows if that was at login
     if !app {
@@ -2409,10 +2352,13 @@ fn main() {
 	to_main_sender: tx,
 	test_requested: None,
 	server_id: 0,
+	serving: None,
     }));
 
     restore_last_test(&state);
-    start_server(listener, &state);
+    if let Some(listener) = listener {
+	start_server(listener, &state);
+    }
 
 #[cfg(target_os = "macos")]
     if app {
@@ -2421,6 +2367,7 @@ fn main() {
 	    test_loop(test_state, rx);
 	});
 	menubar::watch_settings(state.clone());
+	menubar::retry_listen(state.clone());
 	menubar::run(state);
     }
     test_loop(state, rx);

@@ -52,7 +52,7 @@ const LABEL: &str = "com.speedketchup.SpeedKetchup";
 const SETTINGS: &str = "# SpeedKetchup settings, one VARIABLE=value per line, lines starting with #
 # are left out, the ones below show the defaults. SpeedKetchup applies them as
 # soon as this file is saved: the interval right away, the others from the
-# next test. A bad value keeps the previous settings, the menu shows what is
+# next test. A bad value is left at its default, the menu shows what is
 # wrong. A new port moves the web page there, its address in the browser too.
 
 # Minutes between the speed tests
@@ -91,6 +91,7 @@ struct Menu {
     result_item: usize,
     time_item: usize,
     error_item: usize,
+    dashboard_item: usize,
     login_item: usize,
 }
 
@@ -119,8 +120,27 @@ fn login_plist() -> String {
 
 // the app keeps its results in the app directory, and a settings file to
 // change the rest, the app gets no environment from a shell
-pub fn app_defaults(mut config: SpeedTestConfig) -> SpeedTestConfig {
+fn app_defaults(mut config: SpeedTestConfig) -> SpeedTestConfig {
     config.store_filename = format!("{}/speedketchup-results.csv", app_dir());
+    config
+}
+
+// the config from the settings file, the environment and the command line
+// go over it. The same at the start and after every change of the file: a bad
+// value is left at its default, the first one is shown in the menu
+pub fn app_config() -> SpeedTestConfig {
+    let settings = settings();
+    let var = |name: &str| setting(name, &settings);
+    let mut config = app_defaults(default_config());
+    let mut result = config_from_vars(&mut config, &var);
+    if let Err(e) = check_config(&config) {
+	config.influx_url = None;
+	result = result.and(Err(e));
+    }
+    if let Err(e) = &result {
+	pr!("{}: {e}, using the default", settings_file());
+    }
+    set_settings_error(result.err());
     config
 }
 
@@ -158,42 +178,76 @@ pub fn set_settings_error(error: Option<String>) {
     }
 }
 
-// the settings file changed, the environment still goes over it like at the
-// start, a new address or port gets a new server and the old one stops
-fn reload_settings(state: &Arc<Mutex<SpeedTestState>>) {
-    let settings = settings();
-    let var = |name: &str| std::env::var(name).ok().or_else(|| settings.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()));
-    let mut config = app_defaults(default_config());
-    let mut result = config_from_vars(&mut config, &var).and_then(|_| check_config(&config));
-    let old = match state.lock() {
-	Ok(state) => state.config.clone(),
+// the web page could not listen on its port, for the menu
+static PORT_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+fn listening(state: &Arc<Mutex<SpeedTestState>>) -> bool {
+    state.lock().map(|s| s.serving.is_some()).unwrap_or(false)
+}
+
+// moves the web page to the address and port of the settings, starting it
+// if it does not run yet. When another program has the port there is no web
+// page, as when starting with these settings, the next try is from
+// retry_listen
+fn listen(state: &Arc<Mutex<SpeedTestState>>) {
+    let (address, port, serving) = match state.lock() {
+	Ok(s) => (s.config.listen_address.clone(), s.config.listen_port, s.serving.clone()),
 	Err(_) => return,
     };
-    let mut listener = None;
-    if result.is_ok() && (&config.listen_address, config.listen_port) != (&old.listen_address, old.listen_port) {
-	match std::net::TcpListener::bind((config.listen_address.as_str(), config.listen_port)) {
-	    Ok(l) => listener = Some(l),
-	    Err(e) => result = Err(format!("cannot listen on {}:{}: {e}", config.listen_address, config.listen_port)),
-	}
-    }
-    if let Err(e) = &result {
-	pr!("{}: {e}, keeping the previous settings", settings_file());
-    }
-    set_settings_error(result.as_ref().err().cloned());
-    if result.is_err() || config == old {
+    if serving.as_ref() == Some(&(address.clone(), port)) {
 	return;
     }
+    let error = match std::net::TcpListener::bind((address.as_str(), port)) {
+	Ok(listener) => {
+	    start_server(listener, state);
+	    None
+	},
+	Err(_) => {
+	    if let Ok(mut s) = state.lock() {
+		s.server_id += 1;
+		s.serving = None;
+	    }
+	    Some(format!("Port {port} is in use by another program"))
+	},
+    };
+    // a connection wakes the old server to stop
+    if let Some((old_address, old_port)) = serving {
+	let ip = old_address.parse().ok().filter(|ip: &std::net::IpAddr| !ip.is_unspecified());
+	let ip = ip.unwrap_or(std::net::Ipv4Addr::LOCALHOST.into());
+	let _ = std::net::TcpStream::connect_timeout(&(ip, old_port).into(), Duration::from_secs(1));
+    }
+    if let Ok(mut e) = PORT_ERROR.lock() {
+	if *e != error {
+	    pr!("{}", error.as_deref().unwrap_or(&format!("listening on {address}:{port}")));
+	    *e = error;
+	}
+    }
+}
+
+// the port can become free later
+pub fn retry_listen(state: Arc<Mutex<SpeedTestState>>) {
+    listen(&state);
+    let _ = std::thread::Builder::new().name("listen".to_string()).spawn(move || {
+	loop {
+	    std::thread::sleep(Duration::from_secs(30));
+	    listen(&state);
+	}
+    });
+}
+
+// the settings file changed, as if the app started with it again, a new
+// address or port moves the web page
+fn reload_settings(state: &Arc<Mutex<SpeedTestState>>) {
+    let config = app_config();
     if let Ok(mut state) = state.lock() {
+	if config == state.config {
+	    return;
+	}
 	state.config = config;
 	// wakes the test loop to wait for the new interval
 	let _ = state.to_main_sender.send(());
     }
-    if let Some(listener) = listener {
-	start_server(listener, state);
-	let ip = old.listen_address.parse().ok().filter(|ip: &std::net::IpAddr| !ip.is_unspecified());
-	let ip = ip.unwrap_or(std::net::Ipv4Addr::LOCALHOST.into());
-	let _ = std::net::TcpStream::connect_timeout(&(ip, old.listen_port).into(), Duration::from_secs(1));
-    }
+    listen(state);
     pr!("reloaded {}", settings_file());
 }
 
@@ -434,17 +488,23 @@ unsafe fn add_item(menu: Id, title: &str, action: Option<Sel>, target: Id, key: 
 // the first line of the menu, the app name in bold, an explicit color keeps
 // it from being grayed out as a disabled item
 unsafe fn add_header(menu: Id, target: Id) {
-    let item = add_item(menu, "SpeedKetchup", None, target, "");
+    let item = add_item(menu, "", None, target, "");
     let font = msg![Id; objc_getClass(cs!("NSFont")), "boldSystemFontOfSize:", 0.0 => f64];
-    let color = msg![Id; objc_getClass(cs!("NSColor")), "labelColor"];
+    set_styled_title(item, "SpeedKetchup", font, msg![Id; objc_getClass(cs!("NSColor")), "labelColor"]);
+}
+
+// a title in font and color, a disabled item keeps the color instead of
+// being grayed out
+unsafe fn set_styled_title(item: Id, title: &str, font: Id, color: Id) {
     let (values, keys) = ([font, color], [NSFontAttributeName, NSForegroundColorAttributeName]);
     let attributes = msg![Id; objc_getClass(cs!("NSDictionary")), "dictionaryWithObjects:forKeys:count:",
 			  values.as_ptr() => *const Id, keys.as_ptr() => *const Id, 2 => usize];
-    let title = msg![Id; item, "title"];
+    let title = ns_string(title);
     let alloc = msg![Id; objc_getClass(cs!("NSAttributedString")), "alloc"];
-    let bold = msg![Id; alloc, "initWithString:attributes:", title => Id, attributes => Id];
-    msg![(); item, "setAttributedTitle:", bold => Id];
-    msg![(); bold, "release"];
+    let styled = msg![Id; alloc, "initWithString:attributes:", title => Id, attributes => Id];
+    msg![(); item, "setAttributedTitle:", styled => Id];
+    msg![(); styled, "release"];
+    msg![(); title, "release"];
 }
 
 unsafe fn add_separator(menu: Id) {
@@ -452,9 +512,14 @@ unsafe fn add_separator(menu: Id) {
     msg![(); menu, "addItem:", item => Id];
 }
 
-extern "C" fn open_dashboard(_this: Id, _cmd: Sel, _sender: Id) {
+// the settings instead while another program has the port
+extern "C" fn open_dashboard(this: Id, cmd: Sel, sender: Id) {
     if let Some(m) = MENU.get() {
-	let port = m.state.lock().map(|s| s.config.listen_port).unwrap_or_default();
+	if !listening(&m.state) {
+	    edit_settings(this, cmd, sender);
+	    return;
+	}
+	let port = m.state.lock().ok().and_then(|s| s.serving.as_ref().map(|(_, port)| *port)).unwrap_or_default();
 	open_url(&format!("http://127.0.0.1:{port}"));
     }
 }
@@ -522,7 +587,9 @@ extern "C" fn will_finish_launching(this: Id, cmd: Sel, notification: Id) {
 	    at_login |= !data.is_null() && msg![u32; data, "enumCodeValue"] == u32::from_be_bytes(*b"lgit");
 	}
     }
-    if !at_login {
+    // without the web page the menu says why
+    let listening = MENU.get().map(|m| listening(&m.state)).unwrap_or(false);
+    if !at_login && listening {
 	open_dashboard(this, cmd, notification);
     }
 }
@@ -560,9 +627,13 @@ extern "C" fn menu_needs_update(_this: Id, _cmd: Sel, _menu: Id) {
     unsafe {
 	set_title(m.result_item as Id, &result);
 	set_title(m.time_item as Id, &when);
-	let error = SETTINGS_ERROR.lock().ok().and_then(|e| e.clone());
-	set_title(m.error_item as Id, &format!("Settings: {}", error.as_deref().unwrap_or("")));
+	let error = SETTINGS_ERROR.lock().ok().and_then(|e| e.clone()).map(|e| format!("Settings: {e}"));
+	let error = error.or_else(|| PORT_ERROR.lock().ok().and_then(|e| e.clone()));
+	let font = msg![Id; objc_getClass(cs!("NSFont")), "menuFontOfSize:", 0.0 => f64];
+	set_styled_title(m.error_item as Id, error.as_deref().unwrap_or(""), font, msg![Id; objc_getClass(cs!("NSColor")), "systemRedColor"]);
 	msg![(); m.error_item as Id, "setHidden:", error.is_none() => bool];
+	// without the web page there is no dashboard to open
+	msg![(); m.dashboard_item as Id, "setEnabled:", listening(&m.state) => bool];
 	msg![(); m.login_item as Id, "setState:", login_enabled() as isize => isize];
     }
 }
@@ -612,7 +683,7 @@ pub fn run(state: Arc<Mutex<SpeedTestState>>) -> ! {
 	let time_item = add_item(menu, "", None, target, "");
 	let error_item = add_item(menu, "", None, target, "");
 	add_separator(menu);
-	add_item(menu, "Open Dashboard", sel(cs!("openDashboard:")), target, "o");
+	let dashboard_item = add_item(menu, "Open Dashboard", sel(cs!("openDashboard:")), target, "o");
 	add_item(menu, "Run Test Now", sel(cs!("runTest:")), target, "r");
 	add_separator(menu);
 	let login_item = add_item(menu, "Start at Login", sel(cs!("toggleLogin:")), target, "");
@@ -627,6 +698,7 @@ pub fn run(state: Arc<Mutex<SpeedTestState>>) -> ! {
 	    result_item: result_item as usize,
 	    time_item: time_item as usize,
 	    error_item: error_item as usize,
+	    dashboard_item: dashboard_item as usize,
 	    login_item: login_item as usize,
 	});
 
