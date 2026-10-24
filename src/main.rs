@@ -1,5 +1,7 @@
 //#![no_std]
 //#![no_main]
+// on windows the tray icon has no console window, tray.rs attaches a terminal's
+#![cfg_attr(windows, windows_subsystem = "windows")]
 extern crate libc;
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
@@ -2070,6 +2072,7 @@ const HELP: &str = "usage: speedketchup [options]
 		port: 1883 by default, plain mqtt only
 	-mu|--mqtt-user <user>: user name for the mqtt broker
 	-mp|--mqtt-password <password>: password for the mqtt broker
+	--tray: windows only, run as the tray icon, as when started from the start menu
 
 every option can also be given as an environment variable, command line options
 take precedence:
@@ -2167,6 +2170,7 @@ fn parse_args() {
 	    "-v" | "--version" => exit(PKG_VERSION, 0),
 	    // the process serial number older macOS passes to apps opened in the Finder
 	    x if x.starts_with("-psn_") => (),
+	    "--login" | "--tray" if cfg!(windows) => (),
 	    x => match OPTIONS.iter().find(|(short, long, _)| x == *short || x == *long) {
 		Some((_, _, name)) => match it.next() {
 		    Some(value) => vars.push((name.to_string(), value)),
@@ -2227,15 +2231,10 @@ fn request_test(state: &Arc<Mutex<SpeedTestState>>) {
 
 // the web page in the default browser, on the desktops
 fn open_url(url: &str) {
-#[cfg(target_os = "macos")]
-    let opened: std::io::Result<()> = Ok(menubar::open_url(url));
-#[cfg(windows)]
-    let opened = std::process::Command::new("cmd.exe").args(["/C", "start", "", url]).output().map(|_| ());
+#[cfg(any(target_os = "macos", windows))]
+    ui::open_url(url);
 #[cfg(not(any(target_os = "macos", windows)))]
-    let opened: std::io::Result<()> = Ok(());
-    if let Err(e) = opened {
-	pr!("could not open {url}: {e}");
-    }
+    let _ = url;
 }
 
 fn exit(str: &str, code: i32) -> ! {
@@ -2246,8 +2245,16 @@ fn exit(str: &str, code: i32) -> ! {
     std::process::exit(code);
 }
 
+#[cfg(any(target_os = "macos", windows))]
+mod app;
 #[cfg(target_os = "macos")]
 mod menubar;
+#[cfg(target_os = "macos")]
+use menubar as ui;
+#[cfg(windows)]
+mod tray;
+#[cfg(windows)]
+use tray as ui;
 
 fn main() {
     /*
@@ -2262,16 +2269,14 @@ fn main() {
      */
     let mut config = default_config();
 
-    // SpeedKetchup.app on macOS is a menu bar icon, with its settings and
-    // results in Application Support
-#[cfg(target_os = "macos")]
-    let app = menubar::is_app();
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(target_os = "macos", windows))]
+    let app = ui::is_app();
+#[cfg(not(any(target_os = "macos", windows)))]
     let app = false;
     parse_args();
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
     if app {
-	config = menubar::app_config();
+	config = app::app_config();
     }
     if !app {
 	if let Err(e) = config_from_vars(&mut config, &|name: &str| setting(name, &[])) {
@@ -2308,6 +2313,8 @@ fn main() {
 
     // started at login by SpeedKetchup.app, nobody is waiting for the page
     let at_login = app && std::env::var_os("SPEEDKETCHUP_LOGIN").is_some();
+#[cfg(windows)]
+    let at_login = app && (at_login || ui::at_login());
     let listener = match std::net::TcpListener::bind((config.listen_address.as_str(), config.listen_port)) {
 	// the app is running already, show its page instead
 	Err(_) if app && is_speedketchup(config.listen_port) => {
@@ -2360,15 +2367,15 @@ fn main() {
 	start_server(listener, &state);
     }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
     if app {
 	let test_state = state.clone();
 	let _ = std::thread::Builder::new().name("test".to_string()).spawn(move || {
 	    test_loop(test_state, rx);
 	});
-	menubar::watch_settings(state.clone());
-	menubar::retry_listen(state.clone());
-	menubar::run(state);
+	ui::watch_settings(state.clone());
+	app::retry_listen(state.clone());
+	ui::run(state);
     }
     test_loop(state, rx);
 }
@@ -2407,6 +2414,11 @@ fn test_loop(state: Arc<Mutex<SpeedTestState>>, rx: mpsc::Receiver<()>) -> ! {
 	    server_host = state.config.server_host.clone();
 	    state.idle_until = None;
 	    state.test_requested = None;
+	    state.gauge_latency = None;
+	    state.gauge_download_mbps = None;
+	    state.gauge_download_latency = None;
+	    state.gauge_upload_mbps = None;
+	    state.gauge_upload_latency = None;
 	}
 	let result = speedtest(&server_host, &state);
 	match &result {

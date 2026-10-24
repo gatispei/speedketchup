@@ -1,8 +1,8 @@
-// The menu bar icon of SpeedKetchup.app on macOS: the last result, opening
-// the web page, running a test now, starting at login and the settings file.
-// AppKit is called through the Objective-C runtime, no crates needed.
+// The macOS menu bar icon, AppKit called through the Objective-C runtime.
 
 use super::*;
+use super::app::*;
+use std::path::PathBuf;
 use std::ffi::{c_char, c_void};
 use std::sync::OnceLock;
 
@@ -49,42 +49,6 @@ macro_rules! msg {
 
 const LABEL: &str = "com.speedketchup.SpeedKetchup";
 
-const SETTINGS: &str = "# SpeedKetchup settings, one VARIABLE=value per line, lines starting with #
-# are left out, the ones below show the defaults. SpeedKetchup applies them as
-# soon as this file is saved: the interval right away, the others from the
-# next test. A bad value is left at its default, the menu shows what is
-# wrong. A new port moves the web page there, its address in the browser too.
-
-# Minutes between the speed tests
-#SPEEDKETCHUP_INTERVAL=10
-
-# Port of the web page with the results, on 127.0.0.1
-#SPEEDKETCHUP_PORT=8288
-
-# Speedtest server host[:port] to always test against, empty picks the server
-# with the lowest latency for every test
-#SPEEDKETCHUP_SERVER=
-
-# Seconds to test the download and upload speed, 0 skips the test
-#SPEEDKETCHUP_DOWNLOAD_DURATION=10
-#SPEEDKETCHUP_UPLOAD_DURATION=10
-
-# Parallel connections for the download and upload tests
-#SPEEDKETCHUP_DOWNLOAD_CONNECTIONS=8
-#SPEEDKETCHUP_UPLOAD_CONNECTIONS=8
-
-# InfluxDB line protocol write url to also write every result to, http only,
-# eg http://influxdb:8086/api/v2/write?org=home&bucket=speedketchup, and its token
-#SPEEDKETCHUP_INFLUX_URL=
-#SPEEDKETCHUP_INFLUX_TOKEN=
-
-# MQTT broker host[:port] to also publish every result to, with Home Assistant
-# discovery, plain mqtt only, and its user name and password
-#SPEEDKETCHUP_MQTT=
-#SPEEDKETCHUP_MQTT_USER=
-#SPEEDKETCHUP_MQTT_PASSWORD=
-";
-
 struct Menu {
     state: Arc<Mutex<SpeedTestState>>,
     // NSMenuItem pointers, AppKit only touches them on the main thread
@@ -106,149 +70,12 @@ fn home() -> String {
     std::env::var("HOME").unwrap_or_default()
 }
 
-pub fn app_dir() -> String {
-    format!("{}/Library/Application Support/SpeedKetchup", home())
-}
-
-fn settings_file() -> String {
-    format!("{}/speedketchup.conf", app_dir())
+pub fn app_dir() -> PathBuf {
+    PathBuf::from(home()).join("Library/Application Support/SpeedKetchup")
 }
 
 fn login_plist() -> String {
     format!("{}/Library/LaunchAgents/{LABEL}.plist", home())
-}
-
-// the app keeps its results in the app directory, and a settings file to
-// change the rest, the app gets no environment from a shell
-fn app_defaults(mut config: SpeedTestConfig) -> SpeedTestConfig {
-    config.store_filename = format!("{}/speedketchup-results.csv", app_dir());
-    config
-}
-
-// the config from the settings file, the environment and the command line
-// go over it. The same at the start and after every change of the file: a bad
-// value is left at its default, the first one is shown in the menu
-pub fn app_config() -> SpeedTestConfig {
-    let settings = settings();
-    let var = |name: &str| setting(name, &settings);
-    let mut config = app_defaults(default_config());
-    let mut result = config_from_vars(&mut config, &var);
-    if let Err(e) = check_config(&config) {
-	config.influx_url = None;
-	result = result.and(Err(e));
-    }
-    if let Err(e) = &result {
-	pr!("{}: {e}, using the default", settings_file());
-    }
-    set_settings_error(result.err());
-    config
-}
-
-fn create_settings_file() {
-    let _ = std::fs::create_dir_all(app_dir());
-    let file = settings_file();
-    if !std::path::Path::new(&file).exists() {
-	let _ = std::fs::write(&file, SETTINGS);
-    }
-}
-
-// the VARIABLE=value lines of the settings file
-pub fn settings() -> Vec<(String, String)> {
-    create_settings_file();
-    let settings = std::fs::read_to_string(settings_file()).unwrap_or_default();
-    let mut vars = vec!();
-    for line in settings.lines() {
-	let line = line.trim();
-	if line.starts_with('#') {
-	    continue;
-	}
-	if let Some((name, value)) = line.split_once('=') {
-	    vars.push((name.trim().to_string(), value.trim().trim_matches('"').to_string()));
-	}
-    }
-    vars
-}
-
-// what is wrong with the settings file, for the menu
-static SETTINGS_ERROR: Mutex<Option<String>> = Mutex::new(None);
-
-pub fn set_settings_error(error: Option<String>) {
-    if let Ok(mut e) = SETTINGS_ERROR.lock() {
-	*e = error;
-    }
-}
-
-// the web page could not listen on its port, for the menu
-static PORT_ERROR: Mutex<Option<String>> = Mutex::new(None);
-
-fn listening(state: &Arc<Mutex<SpeedTestState>>) -> bool {
-    state.lock().map(|s| s.serving.is_some()).unwrap_or(false)
-}
-
-// moves the web page to the address and port of the settings, starting it
-// if it does not run yet. When another program has the port there is no web
-// page, as when starting with these settings, the next try is from
-// retry_listen
-fn listen(state: &Arc<Mutex<SpeedTestState>>) {
-    let (address, port, serving) = match state.lock() {
-	Ok(s) => (s.config.listen_address.clone(), s.config.listen_port, s.serving.clone()),
-	Err(_) => return,
-    };
-    if serving.as_ref() == Some(&(address.clone(), port)) {
-	return;
-    }
-    let error = match std::net::TcpListener::bind((address.as_str(), port)) {
-	Ok(listener) => {
-	    start_server(listener, state);
-	    None
-	},
-	Err(_) => {
-	    if let Ok(mut s) = state.lock() {
-		s.server_id += 1;
-		s.serving = None;
-	    }
-	    Some(format!("Port {port} is in use by another program"))
-	},
-    };
-    // a connection wakes the old server to stop
-    if let Some((old_address, old_port)) = serving {
-	let ip = old_address.parse().ok().filter(|ip: &std::net::IpAddr| !ip.is_unspecified());
-	let ip = ip.unwrap_or(std::net::Ipv4Addr::LOCALHOST.into());
-	let _ = std::net::TcpStream::connect_timeout(&(ip, old_port).into(), Duration::from_secs(1));
-    }
-    if let Ok(mut e) = PORT_ERROR.lock() {
-	if *e != error {
-	    pr!("{}", error.as_deref().unwrap_or(&format!("listening on {address}:{port}")));
-	    *e = error;
-	}
-    }
-}
-
-// the port can become free later
-pub fn retry_listen(state: Arc<Mutex<SpeedTestState>>) {
-    listen(&state);
-    let _ = std::thread::Builder::new().name("listen".to_string()).spawn(move || {
-	loop {
-	    std::thread::sleep(Duration::from_secs(30));
-	    listen(&state);
-	}
-    });
-}
-
-// the settings file changed, as if the app started with it again, a new
-// address or port moves the web page
-fn reload_settings(state: &Arc<Mutex<SpeedTestState>>) {
-    let config = app_config();
-    if let Ok(mut state) = state.lock() {
-	if config == state.config {
-	    return;
-	}
-	state.config = config;
-	// wakes the test loop to wait for the new interval
-	let _ = state.to_main_sender.send(());
-    }
-    listen(state);
-    pr!("reloaded {}", settings_file());
 }
 
 fn vnode_event(fd: i32, fflags: u32) -> libc::kevent {
@@ -267,14 +94,14 @@ fn vnode_event(fd: i32, fflags: u32) -> libc::kevent {
 // directory is watched too and the file opened again after every change
 pub fn watch_settings(state: Arc<Mutex<SpeedTestState>>) {
     let _ = std::thread::Builder::new().name("settings".to_string()).spawn(move || unsafe {
-	let (dir, file) = match (std::ffi::CString::new(app_dir()), std::ffi::CString::new(settings_file())) {
+	let (dir, file) = match (std::ffi::CString::new(app_dir().to_string_lossy().as_bytes()), std::ffi::CString::new(settings_file().to_string_lossy().as_bytes())) {
 	    (Ok(dir), Ok(file)) => (dir, file),
 	    _ => return,
 	};
 	let kq = libc::kqueue();
 	let dir_fd = libc::open(dir.as_ptr(), libc::O_EVTONLY | libc::O_CLOEXEC);
 	if kq < 0 || dir_fd < 0 {
-	    pr!("cannot watch {}", app_dir());
+	    pr!("cannot watch {}", app_dir().display());
 	    return;
 	}
 	let mut last = std::fs::read(settings_file()).ok();
@@ -296,11 +123,7 @@ pub fn watch_settings(state: Arc<Mutex<SpeedTestState>>) {
 		std::thread::sleep(Duration::from_secs(1));
 		continue;
 	    }
-	    let now = std::fs::read(settings_file()).ok();
-	    if now.is_some() && now != last {
-		last = now;
-		reload_settings(&state);
-	    }
+	    settings_changed(&state, &mut last);
 	}
     });
 }
@@ -398,68 +221,6 @@ fn write_login_plist() {
     }
 }
 
-fn ago(secs: u64) -> String {
-    match secs {
-	0..=59 => "just now".to_string(),
-	60..=3599 => format!("{} min ago", secs / 60),
-	3600..=86399 => format!("{} h ago", secs / 3600),
-	_ => format!("{} days ago", secs / 86400),
-    }
-}
-
-fn speeds_line(download: Option<f32>, upload: Option<f32>, latency: Option<Duration>) -> String {
-    let mut parts = vec!();
-    if let Some(x) = download {
-	parts.push(format!("↓ {}", float_to_str(x)));
-    }
-    if let Some(x) = upload {
-	parts.push(format!("↑ {}", float_to_str(x)));
-    }
-    let mut line = parts.join("  ");
-    if parts.len() > 0 {
-	line += " Mbit/s";
-    }
-    if let Some(x) = latency {
-	line += &format!("  ·  {} ms", dur_to_str(Some(x)));
-    }
-    line
-}
-
-// the two lines at the top of the menu, the result and when it was
-fn status_lines(state: &Arc<Mutex<SpeedTestState>>) -> (String, String) {
-    let state = match state.lock() {
-	Ok(s) => s,
-	Err(_) => return (String::new(), String::new()),
-    };
-    // while testing, the live gauges in place of the last result
-    if state.status.starts_with("test") || state.status == "get provider info" {
-	let phase = match state.status.as_str() {
-	    "test latency" => "Testing latency…",
-	    "test download" => "Testing download…",
-	    "test wait" | "test upload" => "Testing upload…",
-	    _ => "Finding a server…",
-	};
-	let line = speeds_line(state.gauge_download_mbps, state.gauge_upload_mbps, state.gauge_latency);
-	return (if line.len() > 0 { line } else { "Testing…".to_string() }, phase.to_string());
-    }
-    let result = match &state.last_result {
-	None => "No results yet".to_string(),
-	Some(r) => speeds_line(r.download, r.upload, r.latency_idle),
-    };
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-    let mut when = match (state.last_test_time, &state.last_error) {
-	(None, _) => String::new(),
-	(Some(t), None) => format!("Last test {}", ago(now.saturating_sub(t))),
-	(Some(t), Some(e)) => format!("Last test failed {}: {e}", ago(now.saturating_sub(t))),
-    };
-    if let Some(until) = state.idle_until {
-	// minutes:seconds like the web page, the open menu counts it down
-	let secs = until.saturating_duration_since(Instant::now()).as_secs();
-	when += &format!("{}next in {:02}:{:02}", if when.len() > 0 { ", " } else { "Next test " }, secs / 60, secs % 60);
-    }
-    (result, when)
-}
-
 unsafe fn ns_string(str: &str) -> Id {
     let alloc = msg![Id; objc_getClass(cs!("NSString")), "alloc"];
     msg![Id; alloc, "initWithBytes:length:encoding:", str.as_ptr() => *const u8, str.len() => usize, 4 => usize]
@@ -515,12 +276,10 @@ unsafe fn add_separator(menu: Id) {
 // the settings instead while another program has the port
 extern "C" fn open_dashboard(this: Id, cmd: Sel, sender: Id) {
     if let Some(m) = MENU.get() {
-	if !listening(&m.state) {
-	    edit_settings(this, cmd, sender);
-	    return;
+	match dashboard_url(&m.state) {
+	    Some(url) => open_url(&url),
+	    None => edit_settings(this, cmd, sender),
 	}
-	let port = m.state.lock().ok().and_then(|s| s.serving.as_ref().map(|(_, port)| *port)).unwrap_or_default();
-	open_url(&format!("http://127.0.0.1:{port}"));
     }
 }
 
@@ -546,7 +305,7 @@ extern "C" fn edit_settings(_this: Id, _cmd: Sel, _sender: Id) {
     create_settings_file();
     unsafe {
 	let workspace = msg![Id; objc_getClass(cs!("NSWorkspace")), "sharedWorkspace"];
-	let (path, bundle) = (ns_string(&settings_file()), ns_string("com.apple.TextEdit"));
+	let (path, bundle) = (ns_string(&settings_file().to_string_lossy()), ns_string("com.apple.TextEdit"));
 	let url = msg![Id; objc_getClass(cs!("NSURL")), "fileURLWithPath:", path => Id];
 	let textedit = msg![Id; workspace, "URLForApplicationWithBundleIdentifier:", bundle => Id];
 	let urls = msg![Id; objc_getClass(cs!("NSArray")), "arrayWithObject:", url => Id];
@@ -627,8 +386,7 @@ extern "C" fn menu_needs_update(_this: Id, _cmd: Sel, _menu: Id) {
     unsafe {
 	set_title(m.result_item as Id, &result);
 	set_title(m.time_item as Id, &when);
-	let error = SETTINGS_ERROR.lock().ok().and_then(|e| e.clone()).map(|e| format!("Settings: {e}"));
-	let error = error.or_else(|| PORT_ERROR.lock().ok().and_then(|e| e.clone()));
+	let error = error_line();
 	let font = msg![Id; objc_getClass(cs!("NSFont")), "menuFontOfSize:", 0.0 => f64];
 	set_styled_title(m.error_item as Id, error.as_deref().unwrap_or(""), font, msg![Id; objc_getClass(cs!("NSColor")), "systemRedColor"]);
 	msg![(); m.error_item as Id, "setHidden:", error.is_none() => bool];

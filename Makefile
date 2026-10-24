@@ -13,7 +13,7 @@ PLATFORMS   := linux/amd64,linux/386,linux/arm64,linux/arm/v6
 IMAGE_ARCHS := amd64=x64 386=i686 arm64=aarch64 arm=arm
 
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-SOURCES := Makefile Cargo.toml build.rs $(wildcard Cargo.lock src/*.rs asset/*)
+SOURCES := Makefile Cargo.toml build.rs $(wildcard Cargo.lock src/*.rs asset/* windows/*.ico)
 
 # build.rs minifies the scripts in asset/index.html, release builds require it
 ESBUILD_VERSION := 0.25.10
@@ -64,7 +64,7 @@ linux_BINS   := $(addprefix bin/speedketchup-,$(LINUX) $(WINDOWS))
 linux_PACKED := $(addprefix bin/speedketchup-,$(addsuffix -upx,$(LINUX)) x64-upx.exe)
 macos_BINS   := $(addprefix bin/speedketchup-,$(MACOS))
 
-.PHONY: build release macos app linux image qpkg build-image push overview clean smoke mas mas-upload
+.PHONY: build release macos app linux image qpkg build-image push overview clean smoke mas mas-upload msix msix-image
 .DEFAULT_GOAL := build
 
 build:
@@ -149,6 +149,26 @@ bin/SpeedKetchup.pkg: $(APP_FILES) $(MAS_PROFILE)
 mas-upload: bin/SpeedKetchup.pkg
 	xcrun altool --validate-app -f $< -t macos --apiKey $(ASC_KEY_ID) --apiIssuer $(ASC_ISSUER)
 	xcrun altool --upload-app -f $< -t macos --apiKey $(ASC_KEY_ID) --apiIssuer $(ASC_ISSUER)
+
+# Microsoft Store package, the identity comes from .env
+MSIX_IDENTITY       ?= SpeedKetchup
+MSIX_PUBLISHER      ?= CN=SpeedKetchup
+MSIX_PUBLISHER_NAME ?= SpeedKetchup
+MSIX_IMAGE          := speedketchup-msix
+
+msix: bin/SpeedKetchup.msix
+
+msix-image:
+	$(IMAGE_BUILD) -t $(MSIX_IMAGE) -f build/msix.Dockerfile build
+
+bin/SpeedKetchup.msix: bin/speedketchup-x64.exe windows/AppxManifest.xml $(wildcard windows/Assets/*.png) | msix-image
+	rm -rf bin/msix $@
+	mkdir -p bin/msix/Assets
+	cp bin/speedketchup-x64.exe bin/msix/SpeedKetchup.exe
+	cp windows/Assets/*.png bin/msix/Assets/
+	sed 's|@IDENTITY@|$(MSIX_IDENTITY)|; s|@PUBLISHER@|$(MSIX_PUBLISHER)|; s|@PUBLISHER_NAME@|$(MSIX_PUBLISHER_NAME)|; s|@VERSION@|$(VERSION)|' \
+		windows/AppxManifest.xml > bin/msix/AppxManifest.xml
+	$(CONTAINER) run --rm -v "$(CURDIR):/src" -w /src $(MSIX_IMAGE) /msix/.vs/bin/makemsix pack -d bin/msix -p $@
 
 bin/speedketchup-%-upx: bin/speedketchup-%
 	@rm -f $@

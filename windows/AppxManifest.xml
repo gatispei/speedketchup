@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 desktop rescap">
+  <Identity Name="@IDENTITY@" Publisher="@PUBLISHER@" Version="@VERSION@.0" ProcessorArchitecture="x64"/>
+  <Properties>
+    <DisplayName>SpeedKetchup</DisplayName>
+    <PublisherDisplayName>@PUBLISHER_NAME@</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0"/>
+  </Dependencies>
+  <Resources>
+    <Resource Language="en-us"/>
+  </Resources>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust"/>
+  </Capabilities>
+  <Applications>
+    <Application Id="SpeedKetchup" Executable="SpeedKetchup.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="SpeedKetchup" Description="Internet speed log and charts, in the tray"
+        BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png"/>
+      <Extensions>
+        <desktop:Extension Category="windows.startupTask" Executable="SpeedKetchup.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="SpeedKetchupStartup" Enabled="false" DisplayName="SpeedKetchup"/>
+        </desktop:Extension>
+        <uap3:Extension Category="windows.appExecutionAlias" Executable="SpeedKetchup.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="speedketchup.exe"/>
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>
