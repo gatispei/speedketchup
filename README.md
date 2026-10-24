@@ -54,7 +54,7 @@ usage: speedketchup [options]
 	-f|--file &ltfilename&gt: file to store test results in, speedketchup-results.csv by default
 	-a|--address &ltlocal_addr&gt: address to listen on for incoming connections, 127.0.0.1 by default
 		local_addr: use 0.0.0.0 to accept connections on all addresses
-	-p|--port &ltport&gt: port to listen on for incoming connections, 8080 by default
+	-p|--port &ltport&gt: port to listen on for incoming connections, 8288 by default
 	-s|--server &ltserver_host[:server_port]&gt: speedtest server to use, avoids automatic server selection if specified
 		server_host: domain_name|ipv4_addr|ipv6_addr
 		server_port: port number, 8080 by default

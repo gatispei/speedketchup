@@ -1964,7 +1964,7 @@ const HELP: &str = "usage: speedketchup [options]
 	-f|--file <filename>: file to store test results in, speedketchup-results.csv by default
 	-a|--address <local_addr>: address to listen on for incoming connections, 127.0.0.1 by default
 		local_addr: use 0.0.0.0 to accept connections on all addresses
-	-p|--port <port>: port to listen on for incoming connections, 8080 by default
+	-p|--port <port>: port to listen on for incoming connections, 8288 by default
 	-s|--server <server_host[:server_port]>: speedtest server to use, avoids automatic server selection if specified
 		server_host: domain_name|ipv4_addr|ipv6_addr
 		server_port: port number, 8080 by default
@@ -2040,7 +2040,7 @@ fn main() {
     let mut config = SpeedTestConfig {
 	test_interval: 10,
 	store_filename: "speedketchup-results.csv".to_string(),
-	listen_port: 8080,
+	listen_port: 8288,
 	listen_address: "127.0.0.1".to_string(),
 	server_host: None,
 	download_duration: 10,
