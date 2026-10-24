@@ -228,8 +228,31 @@ builds the packages from the linux binaries in `./bin` with QNAP's QDK.
 
 ### Alternatives
 
-- https://www.speedtest.net/apps/cli - official speedtest cli tool, binary only
-- https://github.com/sivel/speedtest-cli - speedtest cli tool in python
-- https://github.com/nelsonjchen/speedtest-rs - speedtest cli tool in rust
-- https://github.com/YuLinLee/speedtest - speedtest cli tool in c
+Periodic testers with history and a web page, the closest to speedketchup:
+
+- https://github.com/alexjustesen/speedtest-tracker - self-hosted speed and uptime tracker in php, with notifications
+- https://github.com/henrywhitaker3/Speedtest-Tracker - continuous speed tracker in go
+- https://github.com/gnmyt/MySpeed - speed test analysis in javascript (node), keeps up to 30 days of results
+- https://github.com/autobrr/netronome - speed test and network monitoring in go, with speedtest.net, iperf3 and librespeed tests, notifications and remote agents
 - https://github.com/barrycarey/Speedmon - periodic speed test runner in python with various storage backends
+
+Prometheus exporters:
+
+- https://github.com/MiguelNdeCarvalho/speedtest-exporter - prometheus exporter in python around the official speedtest cli
+- https://github.com/danopstech/speedtest_exporter - prometheus exporter in go
+
+One-off command line testers:
+
+- https://www.speedtest.net/apps/cli - official speedtest cli tool, binary only
+- https://github.com/sivel/speedtest-cli - speedtest cli tool in python, archived
+- https://github.com/showwin/speedtest-go - speedtest.net cli and library in go
+- https://github.com/nelsonjchen/speedtest-rs - speedtest cli tool in rust, unmaintained
+- https://github.com/YuLinLee/speedtest - speedtest cli tool in c
+- https://github.com/luizluca/speedtest-shell - speedtest.net client in posix shell for openwrt and other small systems
+- https://github.com/sindresorhus/fast-cli - fast.com cli in node
+- https://github.com/librespeed/speedtest-cli - cli in go for librespeed servers
+
+Self-hosted test servers, they measure the link between a browser and your own server rather than your internet connection:
+
+- https://github.com/librespeed/speedtest - html5 speed test server
+- https://github.com/openspeedtest/Speed-Test - html5 speed test server
