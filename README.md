@@ -14,14 +14,14 @@ Prebuilt executables for some platforms:
 
 | platform | executable | [upx](https://upx.github.io/)-compressed executable |
 |-|-|-|
-|linux x86_64|[469k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64)|[204k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64-upx)|
-|linux i686|[459k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-i686)|[208k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-i686-upx)|
-|linux aarch64|[460k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-aarch64)|[195k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-aarch64-upx)|
-|linux arm|[460k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-arm)|[204k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-arm-upx)|
-|linux mips|[658k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mips)|[232k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mips-upx)|
-|linux mipsel|[658k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mipsel)|[236k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mipsel-upx)|
-|windows x86_64|[442k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64.exe)|[188k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64-upx.exe)|
-|macos universal (x86_64 + aarch64)|[699k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-macos)|
+|linux x86_64|[444k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64)|[195k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64-upx)|
+|linux i686|[435k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-i686)|[199k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-i686-upx)|
+|linux aarch64|[460k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-aarch64)|[187k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-aarch64-upx)|
+|linux arm|[439k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-arm)|[195k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-arm-upx)|
+|linux mips|[592k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mips)|[222k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mips-upx)|
+|linux mipsel|[592k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mipsel)|[225k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mipsel-upx)|
+|windows x86_64|[448k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64.exe)|[191k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64-upx.exe)|
+|macos menu bar app, universal (x86_64 + aarch64)|[705k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/SpeedKetchup-macos.zip)|
 
 ### Builtin web server
 ![speedketchup webserver](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/img/ketchup.png "SpeedKetchup webserver")
@@ -160,6 +160,22 @@ successful test for two intervals. The sensors of a test disabled with `-dd 0`
 or `-ud 0` are removed. speedketchup connects for every result and disconnects
 when the broker has acknowledged it. Only plain mqtt is supported, no TLS.
 
+### macOS menu bar app
+
+SpeedKetchup.app runs in the menu bar, with no Dock icon and no terminal. The
+menu shows the last result and the time to the next test, the live speeds
+during a test, opens the web page, runs a test right away, starts
+SpeedKetchup at login and opens its settings file.
+
+The settings and results are in `~/Library/Application Support/SpeedKetchup`.
+`speedketchup.conf` takes the same `SPEEDKETCHUP_...` variables as the
+environment, one per line, and the app applies them as soon as the file is
+saved. A bad value, or a port another program has, is shown in red in the
+menu. The web page is on [127.0.0.1:8288](http://127.0.0.1:8288).
+
+The app is signed with a Developer ID and notarized by Apple. The binary in it
+is the same macos universal binary, which runs from a terminal too.
+
 ### Building
 
 A plain `make` gives you a binary for the machine you are on.
@@ -172,6 +188,7 @@ panic formatting machinery.
 <pre>
 make release   # every released binary, needs a mac
 make macos     # just the macos universal binary
+make app       # SpeedKetchup.app in bin/SpeedKetchup-macos.zip
 make linux     # just the linux + windows binaries
 </pre>
 

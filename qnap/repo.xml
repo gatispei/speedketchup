@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <plugins>
-  <cachechk>202610232135</cachechk>
+  <cachechk>202610241907</cachechk>
   <item>
     <name>SpeedKetchup</name>
     <internalName>SpeedKetchup</internalName>
@@ -12,86 +12,86 @@
     <description><![CDATA[SpeedKetchup runs an internet speed test against the nearest speedtest.net server every few minutes, stores the results and shows them with speed and latency charts, averages and a table of every result in its web page on port 8288.
 
 Settings are in speedketchup.conf in the SpeedKetchup folder, restart it in the App Center after a change.]]></description>
-    <version>0.4.0</version>
+    <version>0.5.0</version>
     <platform>
       <platformID>TS-NASX86</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_x86_64.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_x86_64.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-NASARM_64</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm_64.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm_64.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X16</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm_64.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm_64.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X28A</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm_64.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm_64.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-XA28A</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm_64.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm_64.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X32</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm_64.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm_64.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X32U</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm_64.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm_64.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X33</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm_64.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm_64.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X33EU</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm_64.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm_64.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X33U</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm_64.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm_64.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X35</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm_64.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm_64.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X35A</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm_64.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm_64.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X35EU</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm_64.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm_64.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X42</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm_64.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm_64.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X41</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm-x41.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm-x41.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X31P2</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm-x41.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm-x41.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X31P3</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm-x41.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm-x41.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X31X</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm-x41.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm-x41.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-X31XU</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm-x41.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm-x41.qpkg</location>
     </platform>
     <platform>
       <platformID>TS-531P</platformID>
-      <location>https://github.com/gatispei/speedketchup/releases/download/v0.4/SpeedKetchup_0.4.0_arm-x41.qpkg</location>
+      <location>https://github.com/gatispei/speedketchup/releases/download/v0.5/SpeedKetchup_0.5.0_arm-x41.qpkg</location>
     </platform>
     <publishedDate>2026-10-23 18:00:00</publishedDate>
     <maintainer><![CDATA[Gatis Peisenieks]]></maintainer>
