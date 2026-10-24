@@ -149,7 +149,7 @@ struct SpeedTestResult {
     error: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct SpeedTestConfig {
     test_interval: u64,
     store_filename: String,
@@ -184,6 +184,7 @@ struct SpeedTestState {
     config: SpeedTestConfig,
     last_result: Option<SpeedTestResult>,
     last_test_time: Option<u64>,
+    last_error: Option<String>,
     tests_total: u64,
     test_failures_total: u64,
 
@@ -191,6 +192,8 @@ struct SpeedTestState {
     to_main_sender: mpsc::Sender<()>,
 
     test_requested: Option<bool>,
+    // the server thread that is current, an older one stops
+    server_id: u32,
 }
 
 #[allow(dead_code)]
@@ -1510,6 +1513,66 @@ fn csv_fields(line: &str) -> Vec<String> {
     ret
 }
 
+// a line of the results file back into a result, None for the header or a
+// line that does not parse
+fn parse_result_line(line: &str) -> Option<SpeedTestResult> {
+    let f = csv_fields(line);
+    if f.len() < 11 {
+	return None;
+    }
+    let ms = |s: &str| s.parse::<f32>().ok().map(|t| Duration::from_nanos((t * 1000_000.0) as u64));
+    Some(SpeedTestResult {
+	timestamp: Some(parse_timestr(&f[0]).ok()?),
+	latency_idle: ms(&f[1]),
+	latency_download: ms(&f[2]),
+	latency_upload: ms(&f[3]),
+	download: f[4].parse().ok(),
+	upload: f[5].parse().ok(),
+	client_public_ip: f[6].parse().ok(),
+	client_isp: f[7].clone(),
+	server_descr: f[8].clone(),
+	server_host: f[9].clone(),
+	error: Some(f[10].clone()).filter(|e| e.len() > 0),
+    })
+}
+
+// the last test from the results file, from before a restart, so the first
+// test waits for the rest of its interval and the last result is there
+fn restore_last_test(state: &Arc<Mutex<SpeedTestState>>) {
+    let filename = match state.lock() {
+	Ok(state) => state.config.store_filename.clone(),
+	Err(_) => return,
+    };
+    // the end of the file is enough, it can hold years of results
+    let mut tail = vec!();
+    if let Ok(mut f) = std::fs::File::open(&filename) {
+	let size = f.metadata().map(|m| m.len()).unwrap_or(0);
+	let _ = std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(size.saturating_sub(64 * 1024)));
+	let _ = std::io::Read::read_to_end(&mut f, &mut tail);
+    }
+    let tail = String::from_utf8_lossy(&tail);
+    let mut results = tail.lines().rev().filter_map(parse_result_line);
+    let last = match results.next() {
+	Some(r) => r,
+	None => return,
+    };
+    let measured = |r: &SpeedTestResult| r.latency_idle.is_some() || r.download.is_some() || r.upload.is_some();
+    let time = last.timestamp.map(|t| t as u64);
+    let (error, result) = match measured(&last) {
+	true => (None, Some(last)),
+	// the result before the failure is still the last one there is
+	false => (last.error, results.find(measured)),
+    };
+    pr!("last test at {}", timestr(Duration::from_secs(time.unwrap_or_default())));
+    if let Ok(mut state) = state.lock() {
+	// waiting for the first test, not testing yet
+	state.status = "idle".to_string();
+	state.last_test_time = time;
+	state.last_error = error;
+	state.last_result = result;
+    }
+}
+
 fn json_str(str: &str) -> String {
     let mut ret = String::from("\"");
     for c in str.chars() {
@@ -1721,9 +1784,7 @@ fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStre
 	},
 	"start" => {
 	    pr!("start");
-	    let mut state = state.lock()?;
-	    state.test_requested = Some(true);
-	    let _ = state.to_main_sender.send(());
+	    request_test(state);
 	    ("".as_bytes(), "text/plain", 0)
 	},
 	"stop" => {
@@ -1910,7 +1971,19 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 }
 
 //use std::os::fd::AsRawFd;
-fn server(listener: std::net::TcpListener, state: Arc<Mutex<SpeedTestState>>) {
+fn start_server(listener: std::net::TcpListener, state: &Arc<Mutex<SpeedTestState>>) {
+    let mut id = 0;
+    if let Ok(mut state) = state.lock() {
+	state.server_id += 1;
+	id = state.server_id;
+    }
+    let state = state.clone();
+    let _ = std::thread::Builder::new().name("server".to_string()).spawn(move || {
+	server(listener, state, id);
+    });
+}
+
+fn server(listener: std::net::TcpListener, state: Arc<Mutex<SpeedTestState>>, id: u32) {
     #[cfg(unix)]
     unsafe {
 	let optval: libc::c_int = 1;
@@ -1927,6 +2000,13 @@ fn server(listener: std::net::TcpListener, state: Arc<Mutex<SpeedTestState>>) {
 	}
     }
     for stream in listener.incoming() {
+	// the settings moved the server to another address or port, a connection
+	// to this one wakes it to stop
+	if let Ok(state) = state.lock() {
+	    if state.server_id != id {
+		return;
+	    }
+	}
 	match stream {
 	    Ok(s) => {
 		let peer_addr = match s.peer_addr() {
@@ -1960,7 +2040,7 @@ fn server(listener: std::net::TcpListener, state: Arc<Mutex<SpeedTestState>>) {
 const HELP: &str = "usage: speedketchup [options]
 	-h|--help: print this
 	-v|--version: print version
-	-i|--interval <minutes>: test interval in minutes, 10 by default
+	-i|--interval <minutes>: test interval in minutes, 10 by default, counted from the last test in the results file after a restart
 	-f|--file <filename>: file to store test results in, speedketchup-results.csv by default
 	-a|--address <local_addr>: address to listen on for incoming connections, 127.0.0.1 by default
 		local_addr: use 0.0.0.0 to accept connections on all addresses
@@ -2003,41 +2083,50 @@ fn mqtt_with_port(host: &str) -> String {
     }
 }
 
-fn env_str(name: &str) -> Option<String> {
-    match std::env::var(name) {
-	Ok(x) if x.len() > 0 => Some(x),
-	_ => None
+// one SPEEDKETCHUP_* setting, empty is the same as not set
+fn var_str(var: &dyn Fn(&str) -> Option<String>, name: &str) -> Option<String> {
+    var(name).filter(|x| x.len() > 0)
+}
+
+fn var_num<T: std::str::FromStr>(var: &dyn Fn(&str) -> Option<String>, name: &str) -> Result<Option<T>, String> {
+    match var_str(var, name) {
+	None => Ok(None),
+	Some(val) => match val.parse() {
+	    Ok(x) => Ok(Some(x)),
+	    Err(_) => Err(format!("bad {name} value '{val}'")),
+	}
     }
 }
 
-fn env_num<T: std::str::FromStr>(name: &str) -> Option<T> {
-    let val = env_str(name)?;
-    match val.parse() {
-	Ok(x) => Some(x),
-	Err(_) => exit(&format!("bad {name} value '{val}'"), -1)
+// the SPEEDKETCHUP_* settings over config, var looks one of them up, a bad
+// value is left out and the first one is the error
+fn config_from_vars(config: &mut SpeedTestConfig, var: &dyn Fn(&str) -> Option<String>) -> Result<(), String> {
+    let mut error = None;
+    macro_rules! num {
+	($name:literal) => { var_num(var, $name).unwrap_or_else(|e| { error.get_or_insert(e); None }) };
+    }
+    if let Some(x) = num!("SPEEDKETCHUP_INTERVAL") { config.test_interval = x; }
+    if let Some(x) = var_str(var, "SPEEDKETCHUP_FILE") { config.store_filename = x; }
+    if let Some(x) = var_str(var, "SPEEDKETCHUP_ADDRESS") { config.listen_address = x; }
+    if let Some(x) = num!("SPEEDKETCHUP_PORT") { config.listen_port = x; }
+    if let Some(x) = var_str(var, "SPEEDKETCHUP_SERVER") { config.server_host = Some(server_with_port(&x)); }
+    if let Some(x) = num!("SPEEDKETCHUP_DOWNLOAD_DURATION") { config.download_duration = x; }
+    if let Some(x) = num!("SPEEDKETCHUP_UPLOAD_DURATION") { config.upload_duration = x; }
+    if let Some(x) = num!("SPEEDKETCHUP_DOWNLOAD_CONNECTIONS") { config.download_connections = x; }
+    if let Some(x) = num!("SPEEDKETCHUP_UPLOAD_CONNECTIONS") { config.upload_connections = x; }
+    if let Some(x) = var_str(var, "SPEEDKETCHUP_INFLUX_URL") { config.influx_url = Some(x); }
+    if let Some(x) = var_str(var, "SPEEDKETCHUP_INFLUX_TOKEN") { config.influx_token = Some(x); }
+    if let Some(x) = var_str(var, "SPEEDKETCHUP_MQTT") { config.mqtt_host = Some(mqtt_with_port(&x)); }
+    if let Some(x) = var_str(var, "SPEEDKETCHUP_MQTT_USER") { config.mqtt_user = Some(x); }
+    if let Some(x) = var_str(var, "SPEEDKETCHUP_MQTT_PASSWORD") { config.mqtt_password = Some(x); }
+    match error {
+	None => Ok(()),
+	Some(e) => Err(e),
     }
 }
 
-fn exit(str: &str, code: i32) -> ! {
-    match code {
-	0 => eprintln!("{str}"),
-	_ => eprintln!("{ATTR_RED}{ATTR_BOLD}{str}{ATTR_RESET}"),
-    };
-    std::process::exit(code);
-}
-
-fn main() {
-    /*
-    match iterate_lines_in_file_backwards("speedketchup-results.csv", |line| {
-	println!("{}", std::str::from_utf8(line).unwrap());
-	true
-    }) {
-	Err(e) => exit(&e.to_string(), -1),
-	Ok(()) => ()
-    }
-    return ();
-     */
-    let mut config = SpeedTestConfig {
+fn default_config() -> SpeedTestConfig {
+    SpeedTestConfig {
 	test_interval: 10,
 	store_filename: "speedketchup-results.csv".to_string(),
 	listen_port: 8288,
@@ -2052,22 +2141,90 @@ fn main() {
 	mqtt_host: None,
 	mqtt_user: None,
 	mqtt_password: None,
-    };
+    }
+}
 
-    if let Some(x) = env_num("SPEEDKETCHUP_INTERVAL") { config.test_interval = x; }
-    if let Some(x) = env_str("SPEEDKETCHUP_FILE") { config.store_filename = x; }
-    if let Some(x) = env_str("SPEEDKETCHUP_ADDRESS") { config.listen_address = x; }
-    if let Some(x) = env_num("SPEEDKETCHUP_PORT") { config.listen_port = x; }
-    if let Some(x) = env_str("SPEEDKETCHUP_SERVER") { config.server_host = Some(server_with_port(&x)); }
-    if let Some(x) = env_num("SPEEDKETCHUP_DOWNLOAD_DURATION") { config.download_duration = x; }
-    if let Some(x) = env_num("SPEEDKETCHUP_UPLOAD_DURATION") { config.upload_duration = x; }
-    if let Some(x) = env_num("SPEEDKETCHUP_DOWNLOAD_CONNECTIONS") { config.download_connections = x; }
-    if let Some(x) = env_num("SPEEDKETCHUP_UPLOAD_CONNECTIONS") { config.upload_connections = x; }
-    if let Some(x) = env_str("SPEEDKETCHUP_INFLUX_URL") { config.influx_url = Some(x); }
-    if let Some(x) = env_str("SPEEDKETCHUP_INFLUX_TOKEN") { config.influx_token = Some(x); }
-    if let Some(x) = env_str("SPEEDKETCHUP_MQTT") { config.mqtt_host = Some(mqtt_with_port(&x)); }
-    if let Some(x) = env_str("SPEEDKETCHUP_MQTT_USER") { config.mqtt_user = Some(x); }
-    if let Some(x) = env_str("SPEEDKETCHUP_MQTT_PASSWORD") { config.mqtt_password = Some(x); }
+fn check_config(config: &SpeedTestConfig) -> Result<(), String> {
+    if let Some(url) = &config.influx_url {
+	let proto = url_proto(url);
+	if !proto.eq_ignore_ascii_case(HTTP) {
+	    return Err(format!("influx url {url}: {proto} is not supported, only http"));
+	}
+    }
+    Ok(())
+}
+
+fn request_test(state: &Arc<Mutex<SpeedTestState>>) {
+    if let Ok(mut state) = state.lock() {
+	state.test_requested = Some(true);
+	let _ = state.to_main_sender.send(());
+    }
+}
+
+// the web page in the default browser, on the desktops
+fn open_url(url: &str) {
+#[cfg(target_os = "macos")]
+    let opened: std::io::Result<()> = Ok(menubar::open_url(url));
+#[cfg(windows)]
+    let opened = std::process::Command::new("cmd.exe").args(["/C", "start", "", url]).output().map(|_| ());
+#[cfg(not(any(target_os = "macos", windows)))]
+    let opened: std::io::Result<()> = Ok(());
+    if let Err(e) = opened {
+	pr!("could not open {url}: {e}");
+    }
+}
+
+fn exit(str: &str, code: i32) -> ! {
+    match code {
+	0 => eprintln!("{str}"),
+	_ => eprintln!("{ATTR_RED}{ATTR_BOLD}{str}{ATTR_RESET}"),
+    };
+    std::process::exit(code);
+}
+
+#[cfg(target_os = "macos")]
+mod menubar;
+
+fn main() {
+    /*
+    match iterate_lines_in_file_backwards("speedketchup-results.csv", |line| {
+	println!("{}", std::str::from_utf8(line).unwrap());
+	true
+    }) {
+	Err(e) => exit(&e.to_string(), -1),
+	Ok(()) => ()
+    }
+    return ();
+     */
+    let mut config = default_config();
+
+    // SpeedKetchup.app on macOS is a menu bar icon, with its settings and
+    // results in Application Support
+#[cfg(target_os = "macos")]
+    let app = menubar::is_app();
+#[cfg(not(target_os = "macos"))]
+    let app = false;
+#[cfg(target_os = "macos")]
+    if app {
+	config = menubar::app_defaults(config);
+    }
+    // the environment over the app settings file
+#[cfg(target_os = "macos")]
+    let settings = if app { menubar::settings() } else { vec!() };
+#[cfg(not(target_os = "macos"))]
+    let settings: Vec<(String, String)> = vec!();
+    let var = |name: &str| std::env::var(name).ok().or_else(|| settings.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()));
+    if let Err(e) = config_from_vars(&mut config, &var) {
+	if !app {
+	    exit(&e, -1);
+	}
+	// the app has no terminal to say it in, its menu shows it instead
+#[cfg(target_os = "macos")]
+	{
+	    pr!("{e}, using the default");
+	    menubar::set_settings_error(Some(e));
+	}
+    }
 
     let args = std::env::args().collect::<Vec<_>>();
     let mut it = args.iter();
@@ -2178,15 +2335,14 @@ fn main() {
 		    None => exit("no mqtt password given", -1),
 		}
 	    },
+	    // the process serial number older macOS passes to apps opened in the Finder
+	    x if x.starts_with("-psn_") => (),
 	    _ => exit(&format!("unknown arg '{}'", arg), -1),
 	}
     }
 
-    if let Some(url) = &config.influx_url {
-	let proto = url_proto(url);
-	if !proto.eq_ignore_ascii_case(HTTP) {
-	    exit(&format!("influx url {url}: {proto} is not supported, only http"), -1);
-	}
+    if let Err(e) = check_config(&config) {
+	exit(&e, -1);
     }
 
     std::env::set_var("RUST_BACKTRACE", "1");
@@ -2213,18 +2369,23 @@ fn main() {
     }
     let sk_url = &format!("http://127.0.0.1:{}", config.listen_port);
 
+    // started at login by SpeedKetchup.app, nobody is waiting for the page
+    let at_login = app && std::env::var_os("SPEEDKETCHUP_LOGIN").is_some();
     let listener = match std::net::TcpListener::bind((config.listen_address.as_str(), config.listen_port)) {
+	// the app is running already, show its page instead
+	Err(_) if app && http_get(&format!("127.0.0.1:{}", config.listen_port), "/status").is_ok() => {
+	    if !at_login {
+		open_url(sk_url);
+	    }
+	    std::process::exit(0);
+	},
 	Err(e) => exit(&format!("could not bind {}:{}: {}", config.listen_address, config.listen_port, e), -1),
 	Ok(l) => l
     };
-#[cfg(unix)]
-    let xxx = std::process::Command::new("open").args([sk_url]).output();
-#[cfg(windows)]
-    let xxx = std::process::Command::new("cmd.exe").args(["/C", "start", "", sk_url]).output();
-    match xxx {
-	Err(e) => pr!("could not open {sk_url}: {e}"),
-	Ok(_) => ()
-    };
+    // the app opens it once it has started, and knows if that was at login
+    if !app {
+	open_url(sk_url);
+    }
     println!("speedketchup is at {ATTR_BOLD}{sk_url}{ATTR_RESET}");
 
     let (tx, rx) = mpsc::channel();
@@ -2241,23 +2402,59 @@ fn main() {
 	config: config,
 	last_result: None,
 	last_test_time: None,
+	last_error: None,
 	tests_total: 0,
 	test_failures_total: 0,
 	to_conn_senders: HashMap::new(),
 	to_main_sender: tx,
 	test_requested: None,
+	server_id: 0,
     }));
 
-    {
-	let state = state.clone();
-	let _ = std::thread::Builder::new().name("server".to_string()).spawn(move || {
-	    server(listener, state);
-	});
-    }
+    restore_last_test(&state);
+    start_server(listener, &state);
 
-    let mut test_interval = Duration::from_secs(0);
+#[cfg(target_os = "macos")]
+    if app {
+	let test_state = state.clone();
+	let _ = std::thread::Builder::new().name("test".to_string()).spawn(move || {
+	    test_loop(test_state, rx);
+	});
+	menubar::watch_settings(state.clone());
+	menubar::run(state);
+    }
+    test_loop(state, rx);
+}
+
+// sleeps until the interval from the last test is over, a test asked for
+// ends it early, a new interval in the settings changes it
+fn wait_for_next_test(state: &Arc<Mutex<SpeedTestState>>, rx: &mpsc::Receiver<()>, last: std::time::SystemTime) {
     loop {
-	let now = Instant::now();
+	let interval = match state.lock() {
+	    Ok(state) if state.test_requested != Some(true) => Duration::from_secs(state.config.test_interval * 60),
+	    _ => return,
+	};
+	let dur = match (last + interval).duration_since(std::time::SystemTime::now()) {
+	    Ok(dur) if !dur.is_zero() => dur,
+	    _ => return,
+	};
+	if let Ok(mut state) = state.lock() {
+	    state.idle_until = Some(Instant::now() + dur);
+	}
+	pr!("sleep for {:?}", dur);
+	let _ = rx.recv_timeout(dur);
+    }
+}
+
+fn test_loop(state: Arc<Mutex<SpeedTestState>>, rx: mpsc::Receiver<()>) -> ! {
+    // a test from before a restart counts, in wall clock time as the machine
+    // may have been off since
+    let mut last_test = state.lock().ok().and_then(|s| s.last_test_time).map(|t| std::time::UNIX_EPOCH + Duration::from_secs(t));
+    loop {
+	if let Some(last) = last_test {
+	    wait_for_next_test(&state, &rx, last);
+	}
+	last_test = Some(std::time::SystemTime::now());
 	let mut server_host = None;
 	if let Ok(mut state) = state.lock() {
 	    server_host = state.config.server_host.clone();
@@ -2290,11 +2487,9 @@ fn main() {
 	    }
 	    influx = state.config.influx_url.clone().map(|url| (url, state.config.influx_token.clone()));
 	    state.status = "save result".to_string();
-	    test_interval = Duration::from_secs(state.config.test_interval * 60);
 	    filename = state.config.store_filename.clone();
 	    state.gauge_download_progress = None;
 	    state.gauge_upload_progress = None;
-            state.idle_until = Some(Instant::now() + test_interval.checked_sub(now.elapsed()).unwrap_or_default());
 	}
 	save_result(&filename, &result);
 	if let Some((url, token)) = influx {
@@ -2311,23 +2506,17 @@ fn main() {
 	    state.tests_total += 1;
 	    state.last_test_time = Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs());
 	    match result {
-		Ok(r) => state.last_result = Some(r),
-		Err(_) => state.test_failures_total += 1,
+		Ok(r) => {
+		    state.last_result = Some(r);
+		    state.last_error = None;
+		},
+		Err(e) => {
+		    state.test_failures_total += 1;
+		    state.last_error = Some(e.to_string());
+		},
 	    }
 	}
         let _ = set_status(&state, "idle");
-
-	// sleep for rest of test_interval unless test is manually requested
-	while let Some(dur) = test_interval.checked_sub(now.elapsed()) {
-	    pr!("sleep for {:?}", dur);
-	    if rx.recv_timeout(dur).is_ok() {
-		if let Ok(state) = state.lock() {
-		    if state.test_requested == Some(true) {
-			break;
-		    }
-		}
-	    }
-	}
     }
 }
 

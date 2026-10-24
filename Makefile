@@ -64,13 +64,13 @@ linux_BINS   := $(addprefix bin/speedketchup-,$(LINUX) $(WINDOWS))
 linux_PACKED := $(addprefix bin/speedketchup-,$(addsuffix -upx,$(LINUX)) x64-upx.exe)
 macos_BINS   := $(addprefix bin/speedketchup-,$(MACOS))
 
-.PHONY: build release macos linux image qpkg build-image push overview clean smoke
+.PHONY: build release macos app linux image qpkg build-image push overview clean smoke mas mas-upload
 .DEFAULT_GOAL := build
 
 build:
 	cargo build --release
 
-release: macos linux
+release: macos app linux
 
 macos: bin/speedketchup-macos
 
@@ -86,6 +86,69 @@ bin/speedketchup-%: $(SOURCES) | bin
 bin/speedketchup-macos: $(macos_BINS)
 	lipo -create -output $@ $^
 	@printf '%-22s %s\n' macos "$$(./$@ --version 2>&1 | head -1)"
+
+# SpeedKetchup.app, the macos binary is a menu bar icon when it runs from a
+# bundle. The zip is signed ad hoc, apple silicon runs nothing unsigned, or
+# with DEVELOPER_ID and notarized with the notarytool NOTARY_PROFILE keychain
+# profile. BUILD is CFBundleVersion, every App Store upload needs a higher one
+DEVELOPER_ID   ?=
+NOTARY_PROFILE ?= speedketchup
+BUILD          ?= $(VERSION)
+APP_FILES      := bin/speedketchup-macos macos/Info.plist macos/SpeedKetchup.icns macos/SpeedKetchup.entitlements
+
+# the Mac App Store package: the app sandboxed, signed with the Apple
+# Distribution certificate and the provisioning profile of TEAM_ID, in a pkg
+# signed with the Mac Installer Distribution certificate. mas-upload sends it
+# to App Store Connect with the API key ASC_KEY_ID of issuer ASC_ISSUER, its
+# AuthKey_<ASC_KEY_ID>.p8 in ~/.appstoreconnect/private_keys
+TEAM_ID        ?=
+MAS_APP_ID     ?= Apple Distribution
+MAS_PKG_ID     ?= 3rd Party Mac Developer Installer
+MAS_PROFILE    ?= macos/SpeedKetchup.provisionprofile
+ASC_KEY_ID     ?=
+ASC_ISSUER     ?=
+
+# $(1) the bundle directory
+define make_bundle
+	rm -rf $(1)/SpeedKetchup.app
+	mkdir -p $(1)/SpeedKetchup.app/Contents/MacOS $(1)/SpeedKetchup.app/Contents/Resources
+	cp bin/speedketchup-macos $(1)/SpeedKetchup.app/Contents/MacOS/speedketchup
+	cp macos/SpeedKetchup.icns $(1)/SpeedKetchup.app/Contents/Resources/
+	sed 's/@VERSION@/$(VERSION)/g; s/@BUILD@/$(BUILD)/g' macos/Info.plist > $(1)/SpeedKetchup.app/Contents/Info.plist
+endef
+
+app: bin/SpeedKetchup-macos.zip
+
+bin/SpeedKetchup-macos.zip: $(APP_FILES)
+	rm -f $@
+	$(call make_bundle,bin)
+ifeq ($(DEVELOPER_ID),)
+	codesign --force --sign - bin/SpeedKetchup.app
+	cd bin && ditto -c -k --keepParent SpeedKetchup.app SpeedKetchup-macos.zip
+else
+	codesign --force --options runtime --timestamp --sign "$(DEVELOPER_ID)" bin/SpeedKetchup.app
+	cd bin && ditto -c -k --keepParent SpeedKetchup.app SpeedKetchup-macos.zip
+	xcrun notarytool submit $@ --keychain-profile "$(NOTARY_PROFILE)" --wait
+	xcrun stapler staple bin/SpeedKetchup.app
+	rm $@ && cd bin && ditto -c -k --keepParent SpeedKetchup.app SpeedKetchup-macos.zip
+endif
+
+mas: bin/SpeedKetchup.pkg
+
+bin/SpeedKetchup.pkg: $(APP_FILES) $(MAS_PROFILE)
+	@test -n "$(TEAM_ID)" || { echo "TEAM_ID is not set"; exit 1; }
+	rm -f $@
+	$(call make_bundle,bin/mas)
+	cp $(MAS_PROFILE) bin/mas/SpeedKetchup.app/Contents/embedded.provisionprofile
+	cp macos/SpeedKetchup.entitlements bin/mas/entitlements.plist
+	plutil -insert 'com\.apple\.application-identifier' -string $(TEAM_ID).com.speedketchup.SpeedKetchup bin/mas/entitlements.plist
+	plutil -insert 'com\.apple\.developer\.team-identifier' -string $(TEAM_ID) bin/mas/entitlements.plist
+	codesign --force --options runtime --timestamp --entitlements bin/mas/entitlements.plist --sign "$(MAS_APP_ID)" bin/mas/SpeedKetchup.app
+	productbuild --component bin/mas/SpeedKetchup.app /Applications --sign "$(MAS_PKG_ID)" $@
+
+mas-upload: bin/SpeedKetchup.pkg
+	xcrun altool --validate-app -f $< -t macos --apiKey $(ASC_KEY_ID) --apiIssuer $(ASC_ISSUER)
+	xcrun altool --upload-app -f $< -t macos --apiKey $(ASC_KEY_ID) --apiIssuer $(ASC_ISSUER)
 
 bin/speedketchup-%-upx: bin/speedketchup-%
 	@rm -f $@

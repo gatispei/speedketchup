@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>SpeedKetchup</string>
+	<key>CFBundleDisplayName</key>
+	<string>SpeedKetchup</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.speedketchup.SpeedKetchup</string>
+	<key>CFBundleExecutable</key>
+	<string>speedketchup</string>
+	<key>CFBundleIconFile</key>
+	<string>SpeedKetchup</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUILD@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © Gatis Peisenieks, GPL-2.0</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>SpeedKetchup sends the test results to InfluxDB or an MQTT broker on your network when its settings name one.</string>
+</dict>
+</plist>

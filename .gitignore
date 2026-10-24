@@ -4,3 +4,4 @@ speedketchup-results.csv
 bin
 target-linux
 .env
+*.provisionprofile

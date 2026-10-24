@@ -50,7 +50,7 @@ Prebuilt executables for some platforms:
 usage: speedketchup [options]
 	-h|--help: print this
 	-v|--version: print version
-	-i|--interval &ltminutes&gt: test interval in minutes, 10 by default
+	-i|--interval &ltminutes&gt: test interval in minutes, 10 by default, counted from the last test in the results file after a restart
 	-f|--file &ltfilename&gt: file to store test results in, speedketchup-results.csv by default
 	-a|--address &ltlocal_addr&gt: address to listen on for incoming connections, 127.0.0.1 by default
 		local_addr: use 0.0.0.0 to accept connections on all addresses
