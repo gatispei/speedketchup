@@ -12,18 +12,26 @@ This aims to be small, efficient all-in-one program (statically linked, includes
 The intent is to allow monitoring of your internet connection as easy as possible.
 You can use speedketchup for one-off test or keep it running continuously to spot any changes in your internet connection.
 
+**What it measures:** the internet connection of the machine speedketchup runs on.
+Every test goes from that machine to a [speedtest.net](https://speedtest.net) server on the internet,
+the same servers the speedtest.net website and apps use. The web page only shows the
+results - opening it, or starting a test from it, does not measure the link between your
+browser and speedketchup, so Wi-Fi between them does not count. To measure the internet
+connection rather than a Wi-Fi link, run it on a machine wired to the router, or on the
+router or NAS itself.
+
 Prebuilt executables for some platforms:
 
-| platform | executable | [upx](https://upx.github.io/)-compressed executable |
-|-|-|-|
+| platform | executable | [upx](https://upx.github.io/)-compressed executable | app store |
+|-|-|-|-|
 |linux x86_64|[444k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64)|[195k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64-upx)|
 |linux i686|[435k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-i686)|[199k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-i686-upx)|
 |linux aarch64|[460k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-aarch64)|[187k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-aarch64-upx)|
 |linux arm|[439k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-arm)|[195k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-arm-upx)|
 |linux mips|[592k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mips)|[222k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mips-upx)|
 |linux mipsel|[592k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mipsel)|[225k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mipsel-upx)|
-|windows x86_64|[448k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64.exe)|[191k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64-upx.exe)|
-|macos app, universal (x86_64 + aarch64)|[705k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/SpeedKetchup-macos.zip)|
+|windows x86_64|[448k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64.exe)|[191k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64-upx.exe)|[Microsoft Store](https://apps.microsoft.com/detail/9P0J5WV54WXH)|
+|macos app, universal (x86_64 + aarch64)|[705k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/SpeedKetchup-macos.zip)|||
 
 ### Builtin web server
 ![speedketchup webserver](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/img/ketchup.png "SpeedKetchup webserver")
@@ -44,7 +52,7 @@ Prebuilt executables for some platforms:
 - [prometheus](https://prometheus.io) metrics of the last test at `/metrics`: download and upload speed, idle and loaded latency, server and isp, test and failure counts
 - all web assets are included in the program binary
 - linux version statically linked with [musl](https://musl.libc.org/) - not dependent on system [libc](https://en.wikipedia.org/wiki/C_standard_library), essentially a single binary container
-- acts as a speedtest server itself. Not registered with official speedtest.net, but can be passed as speedtest server to supporting clients
+- also acts as a speedtest server, the other direction from its own tests: speedtest clients on your network can test against the machine it runs on. Not registered with official speedtest.net, but can be passed as speedtest server to supporting clients
 
 ### Command Line
 
@@ -178,6 +186,19 @@ menu. The web page is on [127.0.0.1:8288](http://127.0.0.1:8288).
 The app is signed with a Developer ID and notarized by Apple. The binary in it
 is the same macos universal binary, which runs from a terminal too.
 
+### Windows app
+
+SpeedKetchup is in the [Microsoft Store](https://apps.microsoft.com/detail/9P0J5WV54WXH).
+It runs in the notification area of the taskbar, with the same menu as the
+macOS app: the last result and the time to the next test, the live speeds
+during a test, the web page, a test right away, start at login and the
+settings file, which opens in Notepad. The settings work the same way, a bad
+value or a port another program has is shown in red in the menu, and the web
+page is on [127.0.0.1:8288](http://127.0.0.1:8288).
+
+The app also adds `speedketchup` to the command line, it runs in the terminal
+when started from one.
+
 ### Building
 
 A plain `make` gives you a binary for the machine you are on.
@@ -265,6 +286,10 @@ documentation and source as of October 2026:
 | login | - (127.0.0.1 by default) | ✓ | optional, OpenID Connect | optional password | ✓ local or OpenID Connect | - |
 | also | acts as a speedtest server | thresholds, packet loss, translations | api, opentelemetry tracing | multiple servers, retention period | packet loss, traceroute, dns monitoring, remote agents | |
 | latest release | 0.5, Oct 2026 | 1.15.1, Oct 2026 | 2.4.2, Oct 2026, as tags and container images only | 1.0.9, May 2024 | 0.16.0, Oct 2026 | no releases, last change Jan 2022 |
+
+All of them measure from the machine they run on, their web page only shows the
+results. The self-hosted test servers further down are the other way around, they
+measure between a browser and the server.
 
 The Ookla cli based ones need its license accepted, speedketchup talks to the
 speedtest.net servers itself. Container image sizes are the compressed linux/amd64
