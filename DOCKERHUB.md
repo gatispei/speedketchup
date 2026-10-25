@@ -1,6 +1,8 @@
 **SpeedKetchup**
 ------------------------------
 
+Know what your internet really delivers.
+
 Run periodic internet [speed test](https://speedtest.net), store, display results with builtin web server.
 
 Source, issues and prebuilt executables for bare metal:

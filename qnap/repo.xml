@@ -9,7 +9,9 @@
     <type>Utilities</type>
     <icon80>https://raw.githubusercontent.com/gatispei/speedketchup/main/qnap/icons/SpeedKetchup_80.gif</icon80>
     <icon100>https://raw.githubusercontent.com/gatispei/speedketchup-files/main/img/icon-256.png</icon100>
-    <description><![CDATA[SpeedKetchup runs an internet speed test against the nearest speedtest.net server every few minutes, stores the results and shows them with speed and latency charts, averages and a table of every result in its web page on port 8288.
+    <description><![CDATA[Know what your internet really delivers.
+
+SpeedKetchup runs an internet speed test against the nearest speedtest.net server every few minutes, stores the results and shows them with speed and latency charts, averages and a table of every result in its web page on port 8288.
 
 Settings are in speedketchup.conf in the SpeedKetchup folder, restart it in the App Center after a change.]]></description>
     <version>0.5.0</version>

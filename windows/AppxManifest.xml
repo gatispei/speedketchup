@@ -23,7 +23,7 @@
   </Capabilities>
   <Applications>
     <Application Id="SpeedKetchup" Executable="SpeedKetchup.exe" EntryPoint="Windows.FullTrustApplication">
-      <uap:VisualElements DisplayName="SpeedKetchup" Description="Internet speed log and charts, in the tray"
+      <uap:VisualElements DisplayName="SpeedKetchup" Description="Know what your internet really delivers."
         BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png"/>
       <Extensions>
         <desktop:Extension Category="windows.startupTask" Executable="SpeedKetchup.exe" EntryPoint="Windows.FullTrustApplication">

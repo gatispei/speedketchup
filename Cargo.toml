@@ -4,6 +4,7 @@ version = "0.5.0"
 authors = ["Gatis Peisenieks <peisenieks@gmail.com>"]
 license = "GPLv2"
 edition = "2021"
+description = "Know what your internet really delivers."
 
 [dependencies]
 #libc-strftime = "0.2.0"

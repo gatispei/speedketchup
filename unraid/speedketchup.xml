@@ -8,7 +8,9 @@
     <Support>https://github.com/gatispei/speedketchup/issues</Support>
     <Project>https://speedketchup.com</Project>
     <ReadMe>https://github.com/gatispei/speedketchup#readme</ReadMe>
-    <Overview>Runs an internet speed test every 10 minutes against the nearest speedtest.net server, stores the results in a csv file and shows them in a builtin web page.
+    <Overview>Know what your internet really delivers.
+
+Runs an internet speed test every 10 minutes against the nearest speedtest.net server, stores the results in a csv file and shows them in a builtin web page.
 
 The web page has speed and latency charts with distributions of the displayed results, daily, monthly, time of day and time of week averages, and a sortable table of every result.
 
