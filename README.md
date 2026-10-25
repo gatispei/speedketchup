@@ -39,6 +39,20 @@ Prebuilt executables for some platforms:
   <img alt="speedketchup webserver" title="SpeedKetchup webserver" src="https://raw.githubusercontent.com/gatispei/speedketchup-files/main/img/ketchup.png">
 </picture>
 
+### Use cases
+
+- **evidence for your internet provider** - "it is slow" is easy to dismiss, weeks of results
+  every 10 minutes, with the time, server and error of every test, are not
+- **comparing providers** - before switching, or while trying a new one, run speedketchup
+  behind each connection and see which one really delivers, not just on a good day
+- **paying for the right plan** - if the line never reaches the speed of your plan, a faster
+  plan will not help, and a cheaper one may give you the same
+- **was it the internet?** - when a video call broke up or a game lagged, look back at what the
+  connection was doing at that time, rather than guessing between the provider, the Wi-Fi and
+  the device
+- **keeping an eye on a place you are not at** - a parents' home, a holiday house or a small
+  office, know that its connection works and how well, without being there
+
 ### Features
 
 - automatic speedtest server selection based on latency or run against specific speedtest server
