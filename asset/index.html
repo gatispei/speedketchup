@@ -544,17 +544,100 @@ function onRequest(r) {
     setTimeout(function () { request(stateStr, onRequest); }, 100);
 };
 
-// fetches the results and updates the charts in place, keeping the mode, the
-// zoom and the table sorting, falls back to reloading the page
+// the results come as rows, the time in seconds and the rest of the line of
+// the results file, the charts take them as columns: time, idle, download and
+// upload latency, download and upload speed. data_info has the text columns,
+// client ip, isp, server description, server host and error, of every result
+var data = [[], [], [], [], [], []];
+var data_info = [];
+// a lone result is there twice, a second apart, a chart needs two points
+var data_padded = false;
+
+// splits a line of the results file into fields, a field can be in quotes
+function csvFields(line) {
+    let ret = [], field = "", quoted = false, start = 0;
+    let re = /[",]/g, m;
+    while ((m = re.exec(line)) != null) {
+	let i = m.index;
+	field += line.slice(start, i);
+	start = i + 1;
+	if (line[i] == ",") {
+	    if (quoted) {
+		field += ",";
+	    }
+	    else {
+		ret.push(field);
+		field = "";
+	    }
+	}
+	else if (quoted && line[i + 1] == '"') {
+	    field += '"';
+	    start = i + 2;
+	    re.lastIndex = start;
+	}
+	else {
+	    quoted = !quoted;
+	}
+    }
+    ret.push(field + line.slice(start));
+    return ret;
+}
+
+function addRows(rows) {
+    if (data_padded) {
+	for (let col of data) {
+	    col.pop();
+	}
+	data_padded = false;
+    }
+    for (let row of rows) {
+	let f = csvFields(row);
+	data[0].push(Number(f[0]));
+	for (let k = 1; k < 6; k++) {
+	    let v = parseFloat(f[k]);
+	    data[k].push(isNaN(v) ? null : v);
+	}
+	let info = [];
+	for (let k = 6; k < 11; k++) {
+	    info.push(f[k] ?? "");
+	}
+	data_info.push(info);
+    }
+    if (data[0].length == 1) {
+	data[0].push(data[0][0] + 1);
+	for (let k = 1; k < 6; k++) {
+	    data[k].push(data[k][0]);
+	}
+	data_padded = true;
+    }
+}
+addRows(typeof data_rows == "undefined" ? [] : data_rows);
+data_rows = null;
+
+// fetches the results after the ones there are and updates the charts in
+// place, keeping the mode, the zoom and the table sorting, falls back to
+// reloading the page
 function refreshResults() {
-    fetch("data.json")
+    fetch("data.json?from=" + data_end)
 	.then(r => {
 	    if (!r.ok) {
 		throw new Error("status " + r.status);
 	    }
 	    return r.json();
 	})
-	.then(j => refreshData(j.data, j.info))
+	.then(j => {
+	    // the results file got shorter or was edited, all of it came again
+	    if (j.from != data_end) {
+		for (let col of data) {
+		    col.length = 0;
+		}
+		data_info.length = 0;
+		data_padded = false;
+	    }
+	    addRows(j.rows);
+	    data_end = j.end;
+	    refreshData(data, data_info);
+	})
 	.catch(e => {
 	    debug("refresh failed, reloading: " + e);
 	    window.location.reload();
@@ -1172,8 +1255,7 @@ function initSpeedKetchup() {
     // the table of the results in the picked time interval, at most
     // table_max_rows of them, sorted by any column
     const table_max_rows = 100;
-    // the text columns from the results file, older data.js doesn't have them
-    let info = typeof data_info == "undefined" ? [] : data_info;
+    let info = data_info;
     const table_cols = [
 	{ name: "Time", get: i => data[0][i], fmt: v => legendFmts.raw(new Date(v * 1e3)) },
 	{ name: "Download (Mbps)", get: i => data[4][i], fmt: format3 },

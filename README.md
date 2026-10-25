@@ -53,6 +53,7 @@ Prebuilt executables for some platforms:
   - sortable table of the results with every recorded detail, including errors
 - [prometheus](https://prometheus.io) metrics of the last test at `/metrics`: download and upload speed, idle and loaded latency, server and isp, test and failure counts
 - all web assets are included in the program binary
+- linux process memory usage under 1 MB at all times
 - linux version statically linked with [musl](https://musl.libc.org/) - not dependent on system [libc](https://en.wikipedia.org/wiki/C_standard_library), essentially a single binary container
 - also acts as a speedtest server, the other direction from its own tests: speedtest clients on your network can test against the machine it runs on. Not registered with official speedtest.net, but can be passed as speedtest server to supporting clients
 

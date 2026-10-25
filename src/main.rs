@@ -1477,26 +1477,6 @@ const ASSET_FAVICON_SVG: &[u8] = include_bytes!("../asset/favicon.svg");
 const ASSET_UPLOT_JS: &[u8] = include_bytes!("../asset/uplot.js");
 const ASSET_UPLOT_CSS: &[u8] = include_bytes!("../asset/uplot.css");
 
-#[derive(Clone)]
-struct JSDur(Option<Duration>);
-impl std::fmt::Debug for JSDur {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-	match self.0 {
-	    None => write!(f, "null"),
-	    Some(_) => write!(f, "{}", dur_to_str(self.0)),
-	}
-    }
-}
-#[derive(Clone)]
-struct JSf32(f32);
-impl std::fmt::Debug for JSf32 {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-	if self.0.is_nan() {
-	    return write!(f, "null")
-	}
-	write!(f, "{}", float_to_str(self.0))
-    }
-}
 // splits a line of the results file into fields, a field can be in quotes
 // to contain commas
 fn csv_fields(line: &str) -> Vec<String> {
@@ -1593,78 +1573,109 @@ fn json_str(str: &str) -> String {
     ret
 }
 
-// the results for the charts as javascript for the page load, or as json for
-// refreshing the page after a test
-fn server_get_data(state: &Arc<Mutex<SpeedTestState>>, json: bool) -> Result<String, ErrorString> {
-    let filename = state.lock()?.config.store_filename.clone();
-    let mut timestamps: Vec<u32> = vec!();
-    let mut lat_idles: Vec<JSDur> = vec!();
-    let mut lat_dls: Vec<JSDur> = vec!();
-    let mut lat_uls: Vec<JSDur> = vec!();
-    let mut downloads: Vec<JSf32> = vec!();
-    let mut uploads: Vec<JSf32> = vec!();
-    // the text columns, client ip, isp, server description, server host
-    // and error, for every result
-    let mut infos: Vec<String> = vec!();
-    let data = match std::fs::read(&filename) {
-	Ok(d) => d,
-	Err(_e) => Vec::<u8>::new(),
-    };
-    let mut it = std::str::from_utf8(&data)?.lines();
-    it.next();
-    while let Some(line) = it.next() {
-	let x: Vec<_> = line.split(",").take(6).collect();
-	if x.len() < 4 {
-	    continue;
+// a response of unknown length, sent in chunks as it is written
+struct ChunkedResponse<'a> {
+    stream: &'a mut std::net::TcpStream,
+    buf: Vec<u8>,
+}
+
+impl<'a> ChunkedResponse<'a> {
+    fn new(stream: &'a mut std::net::TcpStream, content_type: &str) -> Result<Self, ErrorString> {
+	// a stalled browser times out, a slow one can take its time
+	stream.set_write_timeout(Some(Duration::from_secs(60)))?;
+	let hdr = format!("HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nTransfer-Encoding: chunked\r\n\r\n");
+	std::io::Write::write_all(stream, hdr.as_bytes())?;
+	Ok(ChunkedResponse { stream, buf: Vec::with_capacity(16 * 1024 + 1024) })
+    }
+
+    fn write(&mut self, str: &str) -> Result<(), ErrorString> {
+	self.buf.extend_from_slice(str.as_bytes());
+	if self.buf.len() >= 16 * 1024 {
+	    self.flush()?;
 	}
-	let time = match parse_timestr(x[0]) {
-	    Err(_) => continue,
-	    Ok(t) => t,
-	};
-	let lat_idle = match x[1].parse::<f32>() {
-	    Err(_) => None,
-	    Ok(t) => Some(Duration::from_nanos((t * 1000_000.0) as u64)),
-	};
-	let lat_dl = match x[2].parse::<f32>() {
-	    Err(_) => None,
-	    Ok(t) => Some(Duration::from_nanos((t * 1000_000.0) as u64)),
-	};
-	let lat_ul = match x[3].parse::<f32>() {
-	    Err(_) => None,
-	    Ok(t) => Some(Duration::from_nanos((t * 1000_000.0) as u64)),
-	};
-	let dl = match x[4].parse::<f32>() {
-	    Err(_) => f32::NAN,
-	    Ok(t) => t,
-	};
-	let ul = match x[5].parse::<f32>() {
-	    Err(_) => f32::NAN,
-	    Ok(t) => t,
-	};
-	timestamps.push(time);
-	lat_idles.push(JSDur(lat_idle));
-	lat_dls.push(JSDur(lat_dl));
-	lat_uls.push(JSDur(lat_ul));
-	downloads.push(JSf32(dl));
-	uploads.push(JSf32(ul));
-	let fields = csv_fields(line);
-	let info: Vec<_> = (6..11).map(|i| json_str(fields.get(i).map(|f| f.as_str()).unwrap_or(""))).collect();
-	infos.push(format!("[{}]", info.join(",")));
+	Ok(())
     }
-    if timestamps.len() == 1 {
-	timestamps.push(timestamps[0].clone() + 1);
-	lat_idles.push(lat_idles[0].clone());
-	lat_dls.push(lat_dls[0].clone());
-	lat_uls.push(lat_uls[0].clone());
-	downloads.push(downloads[0].clone());
-	uploads.push(uploads[0].clone());
+
+    fn flush(&mut self) -> Result<(), ErrorString> {
+	if self.buf.len() > 0 {
+	    let mut chunk = format!("{:x}\r\n", self.buf.len()).into_bytes();
+	    chunk.append(&mut self.buf);
+	    chunk.extend_from_slice(b"\r\n");
+	    std::io::Write::write_all(self.stream, &chunk)?;
+	}
+	Ok(())
     }
-    let data = format!("[{:?}, {:?}, {:?}, {:?}, {:?}, {:?}]", timestamps, lat_idles, lat_dls, lat_uls, downloads, uploads);
-    let infos = format!("[{}]", infos.join(","));
-    if json {
-	return Ok(format!("{{ \"data\": {}, \"info\": {} }}", data, infos));
+
+    fn finish(mut self) -> Result<(), ErrorString> {
+	self.flush()?;
+	std::io::Write::write_all(self.stream, b"0\r\n\r\n")?;
+	Ok(())
     }
-    Ok(format!("let data = {}; let data_info = {}; let stateObj = {};", data, infos, server_get_status(state)?))
+}
+
+// streams the results from byte offset from of the results file on, as
+// javascript for the page load, or as json for the new results after a test.
+// A row is the time in seconds and the rest of the line as it is, the page
+// splits it. A from that is not the start of a line, as the file got shorter
+// or was edited, starts from the beginning, the response says where it started
+// and ended
+fn server_send_results(stream: &mut std::net::TcpStream, state: &Arc<Mutex<SpeedTestState>>, json: bool, from: u64) -> Result<(), ErrorString> {
+    let filename = state.lock()?.config.store_filename.clone();
+    let mut file = std::fs::File::open(&filename).ok();
+    let size = file.as_ref().and_then(|f| f.metadata().ok()).map(|m| m.len()).unwrap_or(0);
+    let mut start = 0;
+    if let Some(f) = file.as_mut() {
+	if from > 0 && from <= size {
+	    let mut before = [0_u8];
+	    std::io::Seek::seek(f, std::io::SeekFrom::Start(from - 1))?;
+	    if std::io::Read::read_exact(f, &mut before).is_ok() && before[0] == b'\n' {
+		start = from;
+	    }
+	}
+	std::io::Seek::seek(f, std::io::SeekFrom::Start(start))?;
+    }
+    let mut out = ChunkedResponse::new(stream, if json { "application/json" } else { "text/javascript" })?;
+    out.write(&match json {
+	true => format!("{{ \"from\": {start}, \"rows\": ["),
+	false => "let data_rows = [".to_string(),
+    })?;
+    let mut end = start;
+    if let Some(f) = file {
+	// up to the size now, a test can add a line meanwhile
+	let mut reader = std::io::BufReader::new(std::io::Read::take(f, size - start));
+	let mut line = vec!();
+	let mut first = true;
+	loop {
+	    line.clear();
+	    let bytes = std::io::BufRead::read_until(&mut reader, b'\n', &mut line)?;
+	    // a line still being written comes the next time
+	    if bytes == 0 || line.last() != Some(&b'\n') {
+		break;
+	    }
+	    end += bytes as u64;
+	    let line = String::from_utf8_lossy(&line);
+	    let (time, rest) = match line.trim_end_matches(['\r', '\n']).split_once(',') {
+		Some(x) => x,
+		None => continue,
+	    };
+	    // the header and lines with less than 4 fields are left out
+	    if rest.split(',').nth(2).is_none() {
+		continue;
+	    }
+	    let time = match parse_timestr(time) {
+		Err(_) => continue,
+		Ok(t) => t,
+	    };
+	    out.write(if first { "\n" } else { ",\n" })?;
+	    out.write(&json_str(&format!("{time},{rest}")))?;
+	    first = false;
+	}
+    }
+    out.write(&match json {
+	true => format!("], \"end\": {end} }}"),
+	false => format!("];\nlet data_end = {end};\nlet stateObj = {};\n", server_get_status(state)?),
+    })?;
+    out.finish()
 }
 
 fn server_get_status(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
@@ -1752,6 +1763,7 @@ fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStre
     let now = Instant::now();
     let url = std::str::from_utf8(url)?;
     let urls = url.strip_prefix("/").unwrap_or(&url);
+    let (urls, query) = urls.split_once('?').unwrap_or((urls, ""));
     let content = std::str::from_utf8(content)?;
 //    pr!("request {urls} {content}");
     let mut _data: String = String::new();
@@ -1761,13 +1773,10 @@ fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStre
 	"favicon.svg" => (ASSET_FAVICON_SVG, "image/svg+xml", 0),
 	"uplot.js" => (ASSET_UPLOT_JS, "text/javascript", 0),
 	"uplot.css" => (ASSET_UPLOT_CSS, "text/css", 0),
-	"data.js" => {
-	    _data = server_get_data(&state, false)?;
-	    (_data.as_bytes(), "text/javascript", 0)
-	},
+	"data.js" => return server_send_results(stream, state, false, 0),
 	"data.json" => {
-	    _data = server_get_data(&state, true)?;
-	    (_data.as_bytes(), "application/json", 0)
+	    let from = query.split('&').find_map(|p| p.strip_prefix("from=")).and_then(|v| v.parse().ok()).unwrap_or(0);
+	    return server_send_results(stream, state, true, from);
 	},
 	"metrics" => {
 	    _data = server_get_metrics(state)?;
