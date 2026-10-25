@@ -14,7 +14,7 @@ Runs an internet speed test every 10 minutes against the nearest speedtest.net s
 
 The web page has speed and latency charts with distributions of the displayed results, daily, monthly, time of day and time of week averages, and a sortable table of every result.
 
-A single statically linked binary of a few hundred kilobytes, the image has nothing else in it.</Overview>
+A single statically linked binary of a few hundred kilobytes, the container image has nothing else in it.</Overview>
     <Category>Network:Other Tools:Utilities</Category>
     <ExtraSearchTerms>speedtest speed test internet bandwidth latency ping monitoring</ExtraSearchTerms>
     <License>GPLv2</License>

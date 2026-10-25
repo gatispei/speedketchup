@@ -18,10 +18,10 @@ docker run -p 8080:8080 -v speedketchup:/data gatispei/speedketchup
 Then open http://localhost:8080. Results are kept in the `/data` volume as
 human readable csv.
 
-### The image
+### The container image
 
 `FROM scratch`: one layer holding the statically linked binary and an empty
-`/data`, nothing else. No shell, no libc, no base image underneath, around
+`/data`, nothing else. No shell, no libc, no base container image underneath, around
 230k compressed.
 
 Built for `linux/amd64`, `linux/386`, `linux/arm64` and `linux/arm/v6`.
@@ -29,7 +29,7 @@ Built for `linux/amd64`, `linux/386`, `linux/arm64` and `linux/arm/v6`.
 ### Configuration
 
 Every option is an environment variable, and the command line overrides it.
-Defaults are the values the image ships with.
+Defaults are the values the container image ships with.
 
 | variable | default | what it does |
 |-|-|-|

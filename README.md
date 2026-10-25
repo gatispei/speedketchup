@@ -23,7 +23,7 @@ Prebuilt executables for some platforms:
 |linux mips|[592k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mips)|[222k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mips-upx)|
 |linux mipsel|[592k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mipsel)|[225k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mipsel-upx)|
 |windows x86_64|[448k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64.exe)|[191k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64-upx.exe)|
-|macos menu bar app, universal (x86_64 + aarch64)|[705k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/SpeedKetchup-macos.zip)|
+|macos app, universal (x86_64 + aarch64)|[705k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/SpeedKetchup-macos.zip)|
 
 ### Builtin web server
 ![speedketchup webserver](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/img/ketchup.png "SpeedKetchup webserver")
@@ -162,7 +162,7 @@ successful test for two intervals. The sensors of a test disabled with `-dd 0`
 or `-ud 0` are removed. speedketchup connects for every result and disconnects
 when the broker has acknowledged it. Only plain mqtt is supported, no TLS.
 
-### macOS menu bar app
+### macOS app
 
 SpeedKetchup.app runs in the menu bar, with no Dock icon and no terminal. The
 menu shows the last result and the time to the next test, the live speeds
@@ -195,9 +195,9 @@ make linux     # just the linux + windows binaries
 </pre>
 
 The linux and windows binaries are cross built inside the container image in
-`build/Dockerfile` - `make linux` builds that image and re-enters make inside
+`build/Dockerfile` - `make linux` builds that container image and re-enters make inside
 it, so the only thing needed on the host is [container](https://github.com/apple/container)
-on macos, or `CONTAINER=docker` (or podman) anywhere else. The image carries the
+on macos, or `CONTAINER=docker` (or podman) anywhere else. The container image carries the
 cross toolchains, a musl built for the tier 3 mips targets, upx and qemu-user -
 every binary is run once before the build is considered done. Everything lands
 in `./bin`.
@@ -206,9 +206,9 @@ in `./bin`.
 
 Official container image: [gatispei/speedketchup](https://hub.docker.com/r/gatispei/speedketchup) on Docker Hub.
 
-The image is `FROM scratch`: one layer holding the statically linked binary and
+The container image is `FROM scratch`: one layer holding the statically linked binary and
 an empty `/data` for the results volume, nothing else. No shell, no libc, no
-base image underneath. Built for linux/amd64, linux/386, linux/arm64 and
+base container image underneath. Built for linux/amd64, linux/386, linux/arm64 and
 linux/arm/v6.
 
 <pre>
@@ -247,13 +247,28 @@ builds the packages from the linux binaries in `./bin` with QNAP's QDK.
 
 ### Alternatives
 
-Periodic testers with history and a web page, the closest to speedketchup:
+How speedketchup compares with other periodic testers, from their
+documentation and source as of October 2026:
 
-- https://github.com/alexjustesen/speedtest-tracker - self-hosted speed and uptime tracker in php, with notifications
-- https://github.com/henrywhitaker3/Speedtest-Tracker - continuous speed tracker in go
-- https://github.com/gnmyt/MySpeed - speed test analysis in javascript (node), keeps up to 30 days of results
-- https://github.com/autobrr/netronome - speed test and network monitoring in go, with speedtest.net, iperf3 and librespeed tests, notifications and remote agents
-- https://github.com/barrycarey/Speedmon - periodic speed test runner in python with various storage backends
+| | speedketchup | [speedtest-tracker](https://github.com/alexjustesen/speedtest-tracker) | [Speedtest-Tracker v2](https://github.com/henrywhitaker3/Speedtest-Tracker) | [MySpeed](https://github.com/gnmyt/MySpeed) | [Netronome](https://github.com/autobrr/netronome) | [Speedmon](https://github.com/barrycarey/Speedmon) |
+|-|-|-|-|-|-|-|
+| written in | rust | php (laravel) | go, nuxt | javascript | go, react | python |
+| speed test | own speedtest.net client | Ookla cli | Ookla cli | Ookla cli, LibreSpeed, Cloudflare | speedtest.net (speedtest-go), iperf3, LibreSpeed | Ookla cli |
+| runs as | single static binary, container image, macOS app, windows exe, QNAP package | container image | container image | linux, windows, container image | binaries for linux, macOS, freebsd, windows, container image | python, container image |
+| container image size | **0.23 MB** | 67 MB | 35 MB | 62 MB | 46 MB | 83 MB |
+| results stored in | csv | sqlite, mysql, mariadb, postgresql | sqlite, postgresql | sqlite, mysql | sqlite, postgresql | only the backends below |
+| web page with charts | ✓ | ✓ | ✓ | ✓ | ✓ | - (grafana) |
+| prometheus metrics | ✓ | ✓ | ✓ | ✓ | - | - |
+| InfluxDB | ✓ v1, v2, v3 and other line protocol servers | ✓ v2 | - | - | - | ✓ v1, v2, graphite |
+| MQTT, Home Assistant | ✓ with discovery | - | - | - | MQTT notifications only | - |
+| notifications | - | mail, discord, slack, telegram, ntfy, gotify, pushover, apprise, webhook, healthchecks | webhook, healthchecks | mail, signal, whatsapp, telegram | discord, ntfy, gotify, pushover, mail, mqtt, webhook and more | - |
+| login | - (127.0.0.1 by default) | ✓ | optional, OpenID Connect | optional password | ✓ local or OpenID Connect | - |
+| also | acts as a speedtest server | thresholds, packet loss, translations | api, opentelemetry tracing | multiple servers, retention period | packet loss, traceroute, dns monitoring, remote agents | |
+| latest release | 0.5, Oct 2026 | 1.15.1, Oct 2026 | 2.4.2, Oct 2026, as tags and container images only | 1.0.9, May 2024 | 0.16.0, Oct 2026 | no releases, last change Jan 2022 |
+
+The Ookla cli based ones need its license accepted, speedketchup talks to the
+speedtest.net servers itself. Container image sizes are the compressed linux/amd64
+download from the registry.
 
 Prometheus exporters:
 
