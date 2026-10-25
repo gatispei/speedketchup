@@ -905,7 +905,9 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
     pr!("speedtest");
     set_status(state, "get provider info")?;
     let cfg = state.lock()?.config.clone();
-    let resp = http_get_follow_redirects("c.speedtest.net", "/speedtest-config.php")
+    // without a unique query the cdn can answer with a cached config, with someone else's ip and isp
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+    let resp = http_get_follow_redirects("c.speedtest.net", &format!("/speedtest-config.php?x={now}"))
 	.map_err(|e| format!("get config: {e}"))?;
 //    pr!("status:{} body:{}", http_status_code(&resp)?, http_body(&resp)?);
     let config_xml = http_body(&resp).map_err(|e| format!("config no body: {e}"))?;
