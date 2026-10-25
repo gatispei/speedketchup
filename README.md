@@ -34,7 +34,10 @@ Prebuilt executables for some platforms:
 |macos app, universal (x86_64 + aarch64)|[707k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/SpeedKetchup-macos.zip)|||
 
 ### Builtin web server
-![speedketchup webserver](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/img/ketchup.png "SpeedKetchup webserver")
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/gatispei/speedketchup-files/main/img/ketchup-dark.png">
+  <img alt="speedketchup webserver" title="SpeedKetchup webserver" src="https://raw.githubusercontent.com/gatispei/speedketchup-files/main/img/ketchup.png">
+</picture>
 
 ### Features
 
