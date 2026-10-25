@@ -51,7 +51,6 @@ Prebuilt executables for some platforms:
   - every result, or daily, monthly, time of day or time of week averages
   - legend with min/avg/max of the displayed results and the share of results in the hovered value range
   - sortable table of the results with every recorded detail, including errors
-  - updates in place when a test finishes, keeping the zoom and the picked view
 - [prometheus](https://prometheus.io) metrics of the last test at `/metrics`: download and upload speed, idle and loaded latency, server and isp, test and failure counts
 - all web assets are included in the program binary
 - linux version statically linked with [musl](https://musl.libc.org/) - not dependent on system [libc](https://en.wikipedia.org/wiki/C_standard_library), essentially a single binary container
