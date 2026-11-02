@@ -151,18 +151,36 @@ struct SpeedTestResult {
     error: Option<String>,
 }
 
+// how the connections of a test get to the wan it tests
+#[derive(Debug, Clone, PartialEq, Default)]
+struct NetOpts {
+    interface: Option<String>,
+    src_addr: Option<std::net::IpAddr>,
+    dscp: Option<u8>,
+}
+
 #[derive(Clone, PartialEq)]
-struct SpeedTestConfig {
+struct TestProfile {
+    name: String,
     test_interval: u64,
-    store_filename: String,
-    listen_port: u16,
-    listen_address: String,
     server_host: Option<String>,
 
     download_duration: u32,
     download_connections: u32,
     upload_duration: u32,
     upload_connections: u32,
+
+    net: NetOpts,
+}
+
+#[derive(Clone, PartialEq)]
+struct SpeedTestConfig {
+    profiles: Vec<TestProfile>,
+    allow_overlapping_tests: bool,
+
+    store_filename: String,
+    listen_port: u16,
+    listen_address: String,
 
     influx_url: Option<String>,
     influx_token: Option<String>,
@@ -172,7 +190,8 @@ struct SpeedTestConfig {
     mqtt_password: Option<String>,
 }
 
-struct SpeedTestState {
+// the state of a profile, at the same index as its config
+struct ProfileState {
     status: String,
     idle_until: Option<Instant>,
     gauge_latency: Option<Duration>,
@@ -183,17 +202,55 @@ struct SpeedTestState {
     gauge_upload_mbps: Option<f32>,
     gauge_upload_latency: Option<Duration>,
 
-    config: SpeedTestConfig,
     last_result: Option<SpeedTestResult>,
     last_test_time: Option<u64>,
     last_error: Option<String>,
     tests_total: u64,
     test_failures_total: u64,
 
+    test_requested: Option<bool>,
+    // when the last test started, the next one is due an interval from it
+    last_start: Option<std::time::SystemTime>,
+    // since when the test is due, waiting for its turn to run
+    queued: Option<std::time::SystemTime>,
+    running: bool,
+}
+
+impl ProfileState {
+    fn new() -> ProfileState {
+	ProfileState {
+	    status: "idle".to_string(),
+	    idle_until: None,
+	    gauge_latency: None,
+	    gauge_download_progress: None,
+	    gauge_download_mbps: None,
+	    gauge_download_latency: None,
+	    gauge_upload_progress: None,
+	    gauge_upload_mbps: None,
+	    gauge_upload_latency: None,
+	    last_result: None,
+	    last_test_time: None,
+	    last_error: None,
+	    tests_total: 0,
+	    test_failures_total: 0,
+	    test_requested: None,
+	    last_start: None,
+	    queued: None,
+	    running: false,
+	}
+    }
+}
+
+struct SpeedTestState {
+    config: SpeedTestConfig,
+    profiles: Vec<ProfileState>,
+    // can be more than the running profiles, new settings can remove a
+    // profile while its test finishes
+    running_tests: usize,
+
     to_conn_senders: HashMap<std::thread::ThreadId, mpsc::Sender<()>>,
     to_main_sender: mpsc::Sender<()>,
 
-    test_requested: Option<bool>,
     // the server thread that is current, an older one stops
     server_id: u32,
     // the address and port it listens on, the settings may want another
@@ -242,6 +299,97 @@ mod c {
 	    exceptfds: *mut FD_SET,
 	    timeout: *const TIMEVAL,
 	) -> i32;
+    }
+    extern "system" {
+	pub fn socket(af: i32, kind: i32, protocol: i32) -> usize;
+	pub fn setsockopt(s: usize, level: i32, name: i32, val: *const u8, len: i32) -> i32;
+	pub fn bind(s: usize, addr: *const u8, len: i32) -> i32;
+	pub fn connect(s: usize, addr: *const u8, len: i32) -> i32;
+    }
+    #[link(name = "iphlpapi")]
+    extern "system" {
+	pub fn if_nametoindex(name: *const libc::c_char) -> u32;
+    }
+}
+
+// the socket calls std has no way to make before it connects
+#[cfg(unix)]
+mod sock {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::net::TcpStream;
+    pub const AF_INET: i32 = libc::AF_INET;
+    pub const AF_INET6: i32 = libc::AF_INET6;
+    pub const IPPROTO_IP: i32 = libc::IPPROTO_IP;
+    pub const IPPROTO_IPV6: i32 = libc::IPPROTO_IPV6;
+    pub const IP_TOS: i32 = libc::IP_TOS;
+    pub const IPV6_TCLASS: i32 = libc::IPV6_TCLASS;
+
+    fn check(ret: i32) -> std::io::Result<()> {
+	match ret {
+	    0 => Ok(()),
+	    _ => Err(std::io::Error::last_os_error()),
+	}
+    }
+    pub fn socket(family: i32) -> std::io::Result<TcpStream> {
+	unsafe {
+	    match libc::socket(family, libc::SOCK_STREAM, 0) {
+		-1 => Err(std::io::Error::last_os_error()),
+		fd => Ok(TcpStream::from_raw_fd(fd)),
+	    }
+	}
+    }
+    pub fn setsockopt(stream: &TcpStream, level: i32, name: i32, val: &[u8]) -> std::io::Result<()> {
+	check(unsafe { libc::setsockopt(stream.as_raw_fd(), level, name, val.as_ptr() as _, val.len() as _) })
+    }
+    pub fn bind(stream: &TcpStream, addr: &[u8]) -> std::io::Result<()> {
+	check(unsafe { libc::bind(stream.as_raw_fd(), addr.as_ptr() as _, addr.len() as _) })
+    }
+    pub fn connect(stream: &TcpStream, addr: &[u8]) -> std::io::Result<()> {
+	check(unsafe { libc::connect(stream.as_raw_fd(), addr.as_ptr() as _, addr.len() as _) })
+    }
+    pub fn connecting(err: &std::io::Error) -> bool {
+	err.raw_os_error() == Some(libc::EINPROGRESS)
+    }
+}
+
+#[cfg(windows)]
+mod sock {
+    use std::os::windows::io::{AsRawSocket, FromRawSocket};
+    use std::net::TcpStream;
+    pub const AF_INET: i32 = 2;
+    pub const AF_INET6: i32 = 23;
+    pub const IPPROTO_IP: i32 = 0;
+    pub const IPPROTO_IPV6: i32 = 41;
+    pub const IP_TOS: i32 = 3;
+    pub const IPV6_TCLASS: i32 = 39;
+
+    fn check(ret: i32) -> std::io::Result<()> {
+	match ret {
+	    0 => Ok(()),
+	    _ => Err(std::io::Error::last_os_error()),
+	}
+    }
+    pub fn socket(family: i32) -> std::io::Result<TcpStream> {
+	unsafe {
+	    // SOCK_STREAM, the winsock of std is started by the listening socket
+	    match super::c::socket(family, 1, 0) {
+		usize::MAX => Err(std::io::Error::last_os_error()),
+		s => Ok(TcpStream::from_raw_socket(s as _)),
+	    }
+	}
+    }
+    pub fn setsockopt(stream: &TcpStream, level: i32, name: i32, val: &[u8]) -> std::io::Result<()> {
+	check(unsafe { super::c::setsockopt(stream.as_raw_socket() as usize, level, name, val.as_ptr(), val.len() as i32) })
+    }
+    pub fn bind(stream: &TcpStream, addr: &[u8]) -> std::io::Result<()> {
+	check(unsafe { super::c::bind(stream.as_raw_socket() as usize, addr.as_ptr(), addr.len() as i32) })
+    }
+    pub fn connect(stream: &TcpStream, addr: &[u8]) -> std::io::Result<()> {
+	check(unsafe { super::c::connect(stream.as_raw_socket() as usize, addr.as_ptr(), addr.len() as i32) })
+    }
+    pub fn connecting(err: &std::io::Error) -> bool {
+	// WSAEWOULDBLOCK
+	err.raw_os_error() == Some(10035)
     }
 }
 
@@ -393,6 +541,7 @@ fn duration<F, T>(mut work: F) -> Result<Duration, ErrorString> where
 
 fn url_get_latency<CB>(
     host: &str,
+    net: &NetOpts,
     path: &str,
     max_iters: u32,
     total_dur: Duration,
@@ -409,7 +558,7 @@ where
 	let mut timeout = total_dur.checked_sub(now.elapsed())?;
 	let mut resp: Vec<u8> = Vec::new();
 	let mut ret = match duration(|| {
-	    http_request(host, path, "GET", "", "", timeout, 0, Some(|buf: &[u8]| {
+	    http_request(host, net, path, "GET", "", "", timeout, 0, Some(|buf: &[u8]| {
 		resp.extend_from_slice(buf);
 		true
 	    }), None::<fn(usize)>)
@@ -456,11 +605,12 @@ where
     Ok(lat)
 }
 
-fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>) -> Result<(), ErrorString> {
+fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>, net: &NetOpts) -> Result<(), ErrorString> {
     let threads: Vec<_> = servers.iter().filter_map(|server| {
 	let host = server.host.clone();
+	let net = net.clone();
 	Some(std::thread::Builder::new().name(format!("test latency {}", server.host)).spawn(move || -> Result<Option<Duration>, ErrorString> {
-	    url_get_latency(&host, "speedtest/latency.txt", 3,
+	    url_get_latency(&host, &net, "speedtest/latency.txt", 3,
 			    Duration::from_secs(3),
 			    Duration::from_millis(50),
 			    None::<fn(Duration)>)
@@ -480,9 +630,114 @@ fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>) -> Result<(), Err
     Ok(())
 }
 
+// the address as the socket calls take it
+fn sockaddr(addr: &std::net::SocketAddr) -> Vec<u8> {
+    let family = if addr.is_ipv4() { sock::AF_INET } else { sock::AF_INET6 };
+    let mut buf = vec!();
+    #[cfg(target_vendor = "apple")]
+    buf.extend_from_slice(&[if addr.is_ipv4() { 16 } else { 28 }, family as u8]);
+    #[cfg(not(target_vendor = "apple"))]
+    buf.extend_from_slice(&(family as u16).to_ne_bytes());
+    buf.extend_from_slice(&addr.port().to_be_bytes());
+    match addr {
+	std::net::SocketAddr::V4(a) => {
+	    buf.extend_from_slice(&a.ip().octets());
+	    buf.extend_from_slice(&[0; 8]);
+	},
+	std::net::SocketAddr::V6(a) => {
+	    buf.extend_from_slice(&a.flowinfo().to_be_bytes());
+	    buf.extend_from_slice(&a.ip().octets());
+	    buf.extend_from_slice(&a.scope_id().to_ne_bytes());
+	},
+    }
+    buf
+}
+
+// sends the connections of the socket out of the interface
+fn bind_interface(stream: &std::net::TcpStream, ipv4: bool, name: &str) -> Result<(), ErrorString> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+	let _ = ipv4;
+	sock::setsockopt(stream, libc::SOL_SOCKET, libc::SO_BINDTODEVICE, name.as_bytes())?;
+	Ok(())
+    }
+    #[cfg(target_vendor = "apple")]
+    {
+	let cname = std::ffi::CString::new(name).map_err(|_| "bad name")?;
+	let index = unsafe { libc::if_nametoindex(cname.as_ptr()) } as i32;
+	if index == 0 {
+	    return Err("no such interface".into());
+	}
+	match ipv4 {
+	    true => sock::setsockopt(stream, libc::IPPROTO_IP, libc::IP_BOUND_IF, &index.to_ne_bytes())?,
+	    false => sock::setsockopt(stream, libc::IPPROTO_IPV6, libc::IPV6_BOUND_IF, &index.to_ne_bytes())?,
+	}
+	Ok(())
+    }
+    #[cfg(windows)]
+    {
+	// the Idx of netsh interface ipv4 show interfaces, or a name like ethernet_32768
+	let index = match name.parse::<u32>() {
+	    Ok(index) => index,
+	    Err(_) => {
+		let cname = std::ffi::CString::new(name).map_err(|_| "bad name")?;
+		unsafe { c::if_nametoindex(cname.as_ptr()) }
+	    },
+	};
+	if index == 0 {
+	    return Err("no such interface".into());
+	}
+	// IP_UNICAST_IF and IPV6_UNICAST_IF, in different byte orders
+	match ipv4 {
+	    true => sock::setsockopt(stream, sock::IPPROTO_IP, 31, &index.to_be_bytes())?,
+	    false => sock::setsockopt(stream, sock::IPPROTO_IPV6, 31, &index.to_ne_bytes())?,
+	}
+	Ok(())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple", windows)))]
+    {
+	let _ = (stream, ipv4, name);
+	Err("not supported here".into())
+    }
+}
+
+fn tcp_connect(addr: &std::net::SocketAddr, net: &NetOpts, timeout: Duration) -> Result<std::net::TcpStream, ErrorString> {
+    if *net == NetOpts::default() {
+	return Ok(std::net::TcpStream::connect_timeout(addr, timeout)?);
+    }
+    let stream = sock::socket(if addr.is_ipv4() { sock::AF_INET } else { sock::AF_INET6 })
+	.map_err(|e| format!("socket: {e}"))?;
+    if let Some(dscp) = net.dscp {
+	let tos = (dscp as i32) << 2;
+	match addr.is_ipv4() {
+	    true => sock::setsockopt(&stream, sock::IPPROTO_IP, sock::IP_TOS, &tos.to_ne_bytes()),
+	    false => sock::setsockopt(&stream, sock::IPPROTO_IPV6, sock::IPV6_TCLASS, &tos.to_ne_bytes()),
+	}.map_err(|e| format!("dscp {dscp}: {e}"))?;
+    }
+    if let Some(interface) = &net.interface {
+	bind_interface(&stream, addr.is_ipv4(), interface).map_err(|e| format!("interface {interface}: {e}"))?;
+    }
+    if let Some(src_addr) = net.src_addr {
+	sock::bind(&stream, &sockaddr(&std::net::SocketAddr::new(src_addr, 0))).map_err(|e| format!("source address {src_addr}: {e}"))?;
+    }
+    stream.set_nonblocking(true)?;
+    match sock::connect(&stream, &sockaddr(addr)) {
+	Ok(()) => return Ok(stream),
+	Err(e) if sock::connecting(&e) => (),
+	Err(e) => return Err(e.into()),
+    }
+    let waited = wait_socket(&stream, timeout, WaitSocketOp::Write);
+    if let Some(e) = stream.take_error()? {
+	return Err(e.into());
+    }
+    waited?;
+    Ok(stream)
+}
+
 //#[inline(never)]
 fn http_request<READ, WRITE>(
     host: &str,
+    net: &NetOpts,
     path: &str,
     method: &str,
     extra_headers: &str,
@@ -497,13 +752,16 @@ where
     WRITE: FnMut(usize) -> ()
 {
     let now = Instant::now();
-    let sock_addr = match std::net::ToSocketAddrs::to_socket_addrs(host) {
+    let mut sock_addrs = match std::net::ToSocketAddrs::to_socket_addrs(host) {
 	Ok(x) => x,
 	Err(_) => std::net::ToSocketAddrs::to_socket_addrs(&(host, 80))
 	    .map_err(|e| format!("http_request: to_socket_addrs {e}"))?
-    }.next().ok_or("htpp_request: no addr")?;
+    };
+    // a source address only reaches addresses of its own family
+    let sock_addr = sock_addrs.find(|a| net.src_addr.map(|s| s.is_ipv4() == a.is_ipv4()).unwrap_or(true))
+	.ok_or("htpp_request: no addr")?;
 //    pr!("http_request {host} {path} {method} {sock_addr} {:?} {send_data_size}", duration);
-    let mut tcp_stream = std::net::TcpStream::connect_timeout(&sock_addr, duration)
+    let mut tcp_stream = tcp_connect(&sock_addr, net, duration)
 	.map_err(|e| format!("http_request: connect {e}"))?;
     tcp_stream.set_nonblocking(true)?;
 
@@ -600,10 +858,10 @@ Connection: close\r
     Ok(())
 }
 
-fn http_get(host: &str, path: &str) -> Result<Vec<u8>, ErrorString> {
+fn http_get(host: &str, net: &NetOpts, path: &str) -> Result<Vec<u8>, ErrorString> {
     let dur = Duration::from_secs(3);
     let mut resp: Vec<u8> = Vec::new();
-    http_request(host, path, "GET", "", "", dur, 0, Some(|buf: &[u8]| {
+    http_request(host, net, path, "GET", "", "", dur, 0, Some(|buf: &[u8]| {
 	resp.extend_from_slice(buf);
 	true
     }), None::<fn(usize)>).map_err(|e| format!("http_get {host} {path}: {e}"))?;
@@ -710,11 +968,11 @@ fn url_host_and_path(url: &str) -> (&str, &str) {
     (&url[start_idx..end_idx], &url[end_idx..])
 }
 
-fn http_get_follow_redirects(host: &str, path: &str) -> Result<Vec<u8>, ErrorString> {
+fn http_get_follow_redirects(host: &str, net: &NetOpts, path: &str) -> Result<Vec<u8>, ErrorString> {
     let mut h = host.to_string();
     let mut p = path.to_string();
     for _ in 0..MAX_REDIRECTS {
-	let resp = http_get(&h, &p)?;
+	let resp = http_get(&h, net, &p)?;
 	match http_status_code(&resp)? {
 	    301 | 302 | 303 | 307 | 308 => (),
 	    _ => return Ok(resp)
@@ -748,7 +1006,7 @@ fn http_get_follow_redirects(host: &str, path: &str) -> Result<Vec<u8>, ErrorStr
     Err(format!("more than {MAX_REDIRECTS} redirects for {host}{path}").into())
 }
 
-fn test_download(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress: &Arc<AtomicUsize>) -> Result<usize, ErrorString> {
+fn test_download(host_str: &str, net: &NetOpts, duration: Duration, sizes: &Vec<u32>, progress: &Arc<AtomicUsize>) -> Result<usize, ErrorString> {
     let mut bytes = 0;
     let now = Instant::now();
     let mut i = 0;
@@ -761,7 +1019,7 @@ fn test_download(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress:
 	    Some(t) => {
 		let size = sizes[i];
 		let path = format!("speedtest/random{size}x{size}.jpg");
-		match http_request(host_str, &path, "GET", "Cache-Control: no-cache\r\n", "", t, 0, Some(|buf: &[u8]| {
+		match http_request(host_str, net, &path, "GET", "Cache-Control: no-cache\r\n", "", t, 0, Some(|buf: &[u8]| {
 		    progress.fetch_add(buf.len(), Ordering::Relaxed);
 		    bytes += buf.len();
 		    true
@@ -778,7 +1036,7 @@ fn test_download(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress:
     Ok(bytes)
 }
 
-fn test_upload(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress: &Arc<AtomicUsize>) -> Result<usize, ErrorString> {
+fn test_upload(host_str: &str, net: &NetOpts, duration: Duration, sizes: &Vec<u32>, progress: &Arc<AtomicUsize>) -> Result<usize, ErrorString> {
     let mut bytes = 0;
     let now = Instant::now();
     let mut i = 0;
@@ -791,7 +1049,7 @@ fn test_upload(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress: &
 	    Some(t) => {
 		let size = sizes[i];
 		let path = "speedtest/upload.php";
-		match http_request(host_str, &path, "POST", &format!("Content-Length: {size}\r\n"), "", t, size as usize, None::<fn(&[u8]) -> bool>, Some(|b: usize| {
+		match http_request(host_str, net, &path, "POST", &format!("Content-Length: {size}\r\n"), "", t, size as usize, None::<fn(&[u8]) -> bool>, Some(|b: usize| {
 		    progress.fetch_add(b, Ordering::Relaxed);
 		    bytes += b;
 		})) {
@@ -812,9 +1070,10 @@ fn test_upload(host_str: &str, duration: Duration, sizes: &Vec<u32>, progress: &
 fn test_multithread<CB>(
     test_type: &str,
     host_str: &str,
+    net: &NetOpts,
     duration: Duration, sizes: &Vec<u32>,
     thread_count: u32,
-    func: fn(&str, Duration, &Vec<u32>, progress: &Arc<AtomicUsize>) -> Result<usize, ErrorString>,
+    func: fn(&str, &NetOpts, Duration, &Vec<u32>, progress: &Arc<AtomicUsize>) -> Result<usize, ErrorString>,
     mut cb: CB)
     -> Result<(Option<f32>, Option<Duration>), ErrorString>
 where
@@ -823,10 +1082,11 @@ where
     let h: String = host_str.to_string();
     let lat_progress = Arc::new(Mutex::new(Option::None));
     let pr = lat_progress.clone();
+    let lat_net = net.clone();
     let latency_thread = std::thread::Builder::new().name(format!("test latency {}", h)).spawn(move || -> Result<Option<Duration>, ErrorString> {
 	let start_delay = Duration::from_millis(500);
 	std::thread::sleep(start_delay);
-	url_get_latency(&h, "speedtest/latency.txt", 10,
+	url_get_latency(&h, &lat_net, "speedtest/latency.txt", 10,
 			duration.checked_sub(start_delay).ok_or("test duration too short for latency test")?,
 			Duration::from_secs(1),
 			Some(|lat: Duration| {
@@ -843,10 +1103,11 @@ where
     let threads: Vec<_> = (0..thread_count).filter_map(|i| {
 	let sh: String = host_str.into();
 	let ds = sizes.clone();
+	let net = net.clone();
 
 	let progress = progress.clone();
 	Some(std::thread::Builder::new().name(format!("test{i}")).spawn(move || -> usize {
-	    match func(&sh, duration, &ds, &progress) {
+	    match func(&sh, &net, duration, &ds, &progress) {
 		Ok(bytes) => {
 //		    pr!("bytes:{bytes}");
 		    bytes
@@ -892,22 +1153,29 @@ where
     Ok((Some(mbps), latency))
 }
 
-fn set_status(state: &Arc<Mutex<SpeedTestState>>, new_status: &str) ->Result<(), ErrorString> {
-    let mut state = state.lock()?;
-    state.status = new_status.to_string();
+fn notify_connections(state: &SpeedTestState) {
     for (_threadid, tx) in state.to_conn_senders.iter() {
 	let _ = tx.send(());
     }
+}
+
+// new settings can have removed the profile, its test still finishes
+fn set_status(state: &Arc<Mutex<SpeedTestState>>, idx: usize, new_status: &str) ->Result<(), ErrorString> {
+    let mut state = state.lock()?;
+    if let Some(p) = state.profiles.get_mut(idx) {
+	p.status = new_status.to_string();
+    }
+    notify_connections(&state);
     Ok(())
 }
 
-fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Result<SpeedTestResult, ErrorString> {
+fn speedtest(cfg: &TestProfile, idx: usize, state: &Arc<Mutex<SpeedTestState>>) -> Result<SpeedTestResult, ErrorString> {
     pr!("speedtest");
-    set_status(state, "get provider info")?;
-    let cfg = state.lock()?.config.clone();
+    set_status(state, idx, "get provider info")?;
+    let net = &cfg.net;
     // without a unique query the cdn can answer with a cached config, with someone else's ip and isp
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-    let resp = http_get_follow_redirects("c.speedtest.net", &format!("/speedtest-config.php?x={now}"))
+    let resp = http_get_follow_redirects("c.speedtest.net", net, &format!("/speedtest-config.php?x={now}"))
 	.map_err(|e| format!("get config: {e}"))?;
 //    pr!("status:{} body:{}", http_status_code(&resp)?, http_body(&resp)?);
     let config_xml = http_body(&resp).map_err(|e| format!("config no body: {e}"))?;
@@ -997,9 +1265,9 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 
 
     let mut servers: Vec<_>;
-    match server {
+    match &cfg.server_host {
 	None => {
-	    let servers_xml = http_body(&http_get_follow_redirects("c.speedtest.net", "/speedtest-servers-static.php")?)?;
+	    let servers_xml = http_body(&http_get_follow_redirects("c.speedtest.net", net, "/speedtest-servers-static.php")?)?;
 	    pr!("servers_xml.len(): {:?}", servers_xml.len());
 	    let servers_xml = roxmltree::Document::parse(&std::str::from_utf8(&servers_xml)?)?;
 	    servers = servers_xml
@@ -1041,9 +1309,9 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
 	    });
 	}
     };
-    set_status(state, "test latency")?;
+    set_status(state, idx, "test latency")?;
     servers.truncate(10);
-    servers_sort_by_latency(&mut servers)?;
+    servers_sort_by_latency(&mut servers, net)?;
 
     let server = servers.iter().filter(|s| s.latency.is_some() )
 	.next();
@@ -1056,7 +1324,9 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
     };
     pr!("test server {:?}", server);
     if let Ok(mut state) = state.lock() {
-	state.gauge_latency = server.latency;
+	if let Some(p) = state.profiles.get_mut(idx) {
+	    p.gauge_latency = server.latency;
+	}
     }
 
     let mut download_mbps = None;
@@ -1064,35 +1334,35 @@ fn speedtest(server: &Option<String>, state: &Arc<Mutex<SpeedTestState>>) -> Res
     let mut upload_mbps = None;
     let mut upload_latency = None;
     if cfg.download_duration > 0 {
-	set_status(state, "test download")?;
-	(download_mbps, download_latency) = test_multithread("download", &server.host, Duration::from_secs(cfg.download_duration as u64), &download_sizes, cfg.download_connections, test_download, |progress, speed, latency|{
+	set_status(state, idx, "test download")?;
+	(download_mbps, download_latency) = test_multithread("download", &server.host, net, Duration::from_secs(cfg.download_duration as u64), &download_sizes, cfg.download_connections, test_download, |progress, speed, latency|{
 	    if let Ok(mut state) = state.lock() {
-		state.gauge_download_progress = Some(progress);
-		state.gauge_download_mbps = Some(speed);
-		state.gauge_download_latency = latency;
-		for (_threadid, tx) in state.to_conn_senders.iter() {
-		    let _ = tx.send(());
+		if let Some(p) = state.profiles.get_mut(idx) {
+		    p.gauge_download_progress = Some(progress);
+		    p.gauge_download_mbps = Some(speed);
+		    p.gauge_download_latency = latency;
 		}
+		notify_connections(&state);
 	    }
 	})?;
 
 	if cfg.upload_duration > 0 {
 	    // allow some time for downloads to stop
-	    set_status(state, "test wait")?;
+	    set_status(state, idx, "test wait")?;
 	    std::thread::sleep(Duration::from_secs(1));
 	}
     }
 
     if cfg.upload_duration > 0 {
-	set_status(state, "test upload")?;
-	(upload_mbps, upload_latency) = test_multithread("upload", &server.host, Duration::from_secs(cfg.upload_duration as u64), &upload_sizes, cfg.upload_connections, test_upload, |progress, speed, latency|{
+	set_status(state, idx, "test upload")?;
+	(upload_mbps, upload_latency) = test_multithread("upload", &server.host, net, Duration::from_secs(cfg.upload_duration as u64), &upload_sizes, cfg.upload_connections, test_upload, |progress, speed, latency|{
 	    if let Ok(mut state) = state.lock() {
-		state.gauge_upload_progress = Some(progress);
-		state.gauge_upload_mbps = Some(speed);
-		state.gauge_upload_latency = latency;
-		for (_threadid, tx) in state.to_conn_senders.iter() {
-		    let _ = tx.send(());
+		if let Some(p) = state.profiles.get_mut(idx) {
+		    p.gauge_upload_progress = Some(progress);
+		    p.gauge_upload_mbps = Some(speed);
+		    p.gauge_upload_latency = latency;
 		}
+		notify_connections(&state);
 	    }
 	})?;
     }
@@ -1147,10 +1417,23 @@ fn opt_ipv6addr_to_str(n: &Option<Ipv6Addr>) -> String {
     }
 }
 
-const CSV_COLS: &str = "Timestamp,LatencyIdle(ms),LatencyDownload(ms),LatencyUpload(ms),Download(Mbps),Upload(Mbps),ClientPublicIP,ClientISP,ServerDescr,ServerHost,Error\n";
-fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
+const CSV_COLS: &str = "Timestamp,LatencyIdle(ms),LatencyDownload(ms),LatencyUpload(ms),Download(Mbps),Upload(Mbps),ClientPublicIP,ClientISP,ServerDescr,ServerHost,Error,Profile\n";
+
+// overlapping tests take turns, so the results file stays in the order of time
+static SAVE_LOCK: Mutex<()> = Mutex::new(());
+
+fn csv_quote(str: &str) -> String {
+    format!("\"{}\"", str.replace("\"", "\"\"").replace("\n", " "))
+}
+
+// profile is the number of the profile, counting from 1
+fn save_result(file: &str, profile: usize, result: &mut Result<SpeedTestResult, ErrorString>) {
+    let _guard = SAVE_LOCK.lock();
+    if let Ok(r) = result {
+	r.timestamp = Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as u32);
+    }
     let str = match result {
-	Ok(r) => format!("{},{},{},{},{},{},{},\"{}\",\"{}\",{},{}\n",
+	Ok(r) => format!("{},{},{},{},{},{},{},{},{},{},{},{profile}\n",
 			 timestr(Duration::from_secs(r.timestamp.unwrap_or_default() as u64)),
 			 dur_to_str(r.latency_idle),
 			 dur_to_str(r.latency_download),
@@ -1158,11 +1441,11 @@ fn save_result(file: &str, result: &Result<SpeedTestResult, ErrorString>) {
 			 opt_float_to_str(r.download),
 			 opt_float_to_str(r.upload),
 			 opt_ipv6addr_to_str(&r.client_public_ip),
-			 r.client_isp,
-			 r.server_descr,
+			 csv_quote(&r.client_isp),
+			 csv_quote(&r.server_descr),
 			 r.server_host,
 			 opt_str_to_str(&r.error)),
-	Err(e) => format!("{},,,,,,,,,,\"{e}\"\n", timestr_now()),
+	Err(e) => format!("{},,,,,,,,,,{},{profile}\n", timestr_now(), csv_quote(&e.to_string())),
     };
     let path = std::path::Path::new(file);
     if path.exists() == false {
@@ -1194,11 +1477,15 @@ fn influx_str(str: &str) -> String {
 // one point per test into the speedketchup measurement, with the same values
 // and rounding as the csv. A failed test is a point with just the error. The
 // url is the full write url, so InfluxDB 1, 2 and 3 and the databases and
-// agents that take line protocol all work without anything to tell them apart
-fn influx_write(url: &str, token: &Option<String>, result: &Result<SpeedTestResult, ErrorString>) -> Result<(), ErrorString> {
+// agents that take line protocol all work without anything to tell them apart.
+// profile is the tag with several profiles, a lone one keeps its series as they were
+fn influx_write(url: &str, token: &Option<String>, profile: Option<&str>, result: &Result<SpeedTestResult, ErrorString>) -> Result<(), ErrorString> {
+    let mut tags = String::new();
+    if let Some(profile) = profile {
+	tags += &format!(",profile={}", influx_tag(profile));
+    }
     let line = match result {
 	Ok(r) => {
-	    let mut tags = String::new();
 	    for (k, v) in [("server", &r.server_descr), ("server_host", &r.server_host), ("isp", &r.client_isp)] {
 		if v.len() > 0 {
 		    tags += &format!(",{k}={}", influx_tag(v));
@@ -1225,7 +1512,7 @@ fn influx_write(url: &str, token: &Option<String>, result: &Result<SpeedTestResu
 	},
 	Err(e) => {
 	    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-	    format!("speedketchup error={} {time}000000000\n", influx_str(&e.to_string()))
+	    format!("speedketchup{tags} error={} {time}000000000\n", influx_str(&e.to_string()))
 	},
     };
 
@@ -1236,7 +1523,7 @@ fn influx_write(url: &str, token: &Option<String>, result: &Result<SpeedTestResu
 	headers += &format!("Authorization: Token {token}\r\n");
     }
     let mut resp: Vec<u8> = Vec::new();
-    http_request(host, path, "POST", &headers, &line, Duration::from_secs(5), 0, Some(|buf: &[u8]| {
+    http_request(host, &NetOpts::default(), path, "POST", &headers, &line, Duration::from_secs(5), 0, Some(|buf: &[u8]| {
 	resp.extend_from_slice(buf);
 	!http_response_complete(&resp)
     }), None::<fn(usize)>)?;
@@ -1292,7 +1579,9 @@ fn mqtt_read_packet(stream: &mut std::net::TcpStream) -> Result<(u8, Vec<u8>), E
 
 // publishes (topic, payload, retain) messages and waits for the broker to
 // acknowledge every one of them
-fn mqtt_publish(cfg: &SpeedTestConfig, messages: &[(String, String, bool)]) -> Result<(), ErrorString> {
+// a broker drops the older of two connections with the same client id, each
+// profile has its own for overlapping tests
+fn mqtt_publish(cfg: &SpeedTestConfig, client_id: &str, messages: &[(String, String, bool)]) -> Result<(), ErrorString> {
     let host = cfg.mqtt_host.as_deref().ok_or("no mqtt broker")?;
     let timeout = Duration::from_secs(5);
     let addr = std::net::ToSocketAddrs::to_socket_addrs(host)
@@ -1311,7 +1600,7 @@ fn mqtt_publish(cfg: &SpeedTestConfig, messages: &[(String, String, bool)]) -> R
 	flags |= 0x40;
     }
     body.extend_from_slice(&[4, flags, 0, 60]);
-    mqtt_str(&mut body, PKG_NAME.as_bytes());
+    mqtt_str(&mut body, client_id.as_bytes());
     if let Some(user) = &cfg.mqtt_user {
 	mqtt_str(&mut body, user.as_bytes());
     }
@@ -1351,14 +1640,31 @@ fn mqtt_publish(cfg: &SpeedTestConfig, messages: &[(String, String, bool)]) -> R
     Ok(())
 }
 
-const MQTT_STATE_TOPIC: &str = "speedketchup/state";
+// the first profile has the topics and ids of a lone one, so adding a profile
+// keeps the home assistant device it has
+fn mqtt_id(idx: usize) -> String {
+    match idx {
+	0 => PKG_NAME.to_string(),
+	_ => format!("{PKG_NAME}_{}", idx + 1),
+    }
+}
+
+fn mqtt_state_topic(idx: usize) -> String {
+    match idx {
+	0 => format!("{PKG_NAME}/state"),
+	_ => format!("{PKG_NAME}/{}/state", idx + 1),
+    }
+}
 
 // home assistant discovery configs and the result. The configs are retained
 // and sent with every result, so they come back if they were deleted. Sensors
 // of a disabled test get an empty config, which removes them. The result is
 // retained too, a home assistant that restarts gets it from the broker
-fn mqtt_messages(cfg: &SpeedTestConfig, result: &Result<SpeedTestResult, ErrorString>) -> Vec<(String, String, bool)> {
-    let device = format!("{{\"identifiers\":[\"speedketchup\"],\"name\":\"SpeedKetchup\",\"model\":\"speedketchup\",\"sw_version\":\"{PKG_VERSION}\"}}");
+fn mqtt_messages(cfg: &TestProfile, idx: usize, several: bool, result: &Result<SpeedTestResult, ErrorString>) -> Vec<(String, String, bool)> {
+    let base = mqtt_id(idx);
+    let state_topic = mqtt_state_topic(idx);
+    let device_name = json_str(&if several { format!("SpeedKetchup {}", cfg.name) } else { "SpeedKetchup".to_string() });
+    let device = format!("{{\"identifiers\":[\"{base}\"],\"name\":{device_name},\"model\":\"speedketchup\",\"sw_version\":\"{PKG_VERSION}\"}}");
     let origin = format!("{{\"name\":\"speedketchup\",\"sw_version\":\"{PKG_VERSION}\",\"support_url\":\"https://github.com/gatispei/speedketchup\"}}");
     // the numbers go unavailable when there was no successful test for two intervals
     let expire_after = cfg.test_interval * 60 * 2 + 300;
@@ -1376,12 +1682,12 @@ fn mqtt_messages(cfg: &SpeedTestConfig, result: &Result<SpeedTestResult, ErrorSt
     ] {
 	let config = match enabled {
 	    false => String::new(),
-	    true => format!("{{\"name\":\"{name}\",\"unique_id\":\"speedketchup_{id}\",\"state_topic\":\"{MQTT_STATE_TOPIC}\",\
+	    true => format!("{{\"name\":\"{name}\",\"unique_id\":\"{base}_{id}\",\"state_topic\":\"{state_topic}\",\
 \"value_template\":\"{{{{ value_json.{field} | default(none) }}}}\",\"unit_of_measurement\":\"{unit}\",\
 \"device_class\":\"{class}\",\"state_class\":\"measurement\",\"suggested_display_precision\":1,\
 \"expire_after\":{expire_after},\"device\":{device},\"origin\":{origin}}}"),
 	};
-	messages.push((format!("homeassistant/sensor/speedketchup/{id}/config"), config, true));
+	messages.push((format!("homeassistant/sensor/{base}/{id}/config"), config, true));
     }
     // text and time, these do not expire, the time is when the last test ran
     for (id, name, field, extra) in [
@@ -1389,14 +1695,14 @@ fn mqtt_messages(cfg: &SpeedTestConfig, result: &Result<SpeedTestResult, ErrorSt
 	("server", "Server", "server", ",\"entity_category\":\"diagnostic\""),
 	("isp", "ISP", "isp", ",\"entity_category\":\"diagnostic\""),
     ] {
-	messages.push((format!("homeassistant/sensor/speedketchup/{id}/config"),
-		       format!("{{\"name\":\"{name}\",\"unique_id\":\"speedketchup_{id}\",\"state_topic\":\"{MQTT_STATE_TOPIC}\",\
+	messages.push((format!("homeassistant/sensor/{base}/{id}/config"),
+		       format!("{{\"name\":\"{name}\",\"unique_id\":\"{base}_{id}\",\"state_topic\":\"{state_topic}\",\
 \"value_template\":\"{{{{ value_json.{field} | default(none) }}}}\"{extra},\"device\":{device},\"origin\":{origin}}}"), true));
     }
     // on when the last test failed, with the error as an attribute
-    messages.push(("homeassistant/binary_sensor/speedketchup/problem/config".to_string(),
-		   format!("{{\"name\":\"Test failed\",\"unique_id\":\"speedketchup_problem\",\"state_topic\":\"{MQTT_STATE_TOPIC}\",\
-\"value_template\":\"{{{{ 'ON' if value_json.error is defined else 'OFF' }}}}\",\"json_attributes_topic\":\"{MQTT_STATE_TOPIC}\",\
+    messages.push((format!("homeassistant/binary_sensor/{base}/problem/config"),
+		   format!("{{\"name\":\"Test failed\",\"unique_id\":\"{base}_problem\",\"state_topic\":\"{state_topic}\",\
+\"value_template\":\"{{{{ 'ON' if value_json.error is defined else 'OFF' }}}}\",\"json_attributes_topic\":\"{state_topic}\",\
 \"json_attributes_template\":\"{{{{ {{'error': value_json.error | default('')}} | tojson }}}}\",\
 \"device_class\":\"problem\",\"device\":{device},\"origin\":{origin}}}"), true));
 
@@ -1424,7 +1730,7 @@ fn mqtt_messages(cfg: &SpeedTestConfig, result: &Result<SpeedTestResult, ErrorSt
 	    state.push(format!("\"error\":{}", json_str(&e.to_string())));
 	},
     }
-    messages.push((MQTT_STATE_TOPIC.to_string(), format!("{{{}}}", state.join(",")), true));
+    messages.push((state_topic, format!("{{{}}}", state.join(",")), true));
     messages
 }
 
@@ -1499,15 +1805,17 @@ fn csv_fields(line: &str) -> Vec<String> {
     ret
 }
 
-// a line of the results file back into a result, None for the header or a
-// line that does not parse
-fn parse_result_line(line: &str) -> Option<SpeedTestResult> {
+// a line of the results file back into its profile number and result, None
+// for the header or a line that does not parse. A line from before there were
+// profiles is of the first one
+fn parse_result_line(line: &str) -> Option<(usize, SpeedTestResult)> {
     let f = csv_fields(line);
     if f.len() < 11 {
 	return None;
     }
     let ms = |s: &str| s.parse::<f32>().ok().map(|t| Duration::from_nanos((t * 1000_000.0) as u64));
-    Some(SpeedTestResult {
+    let profile = f.get(11).and_then(|p| p.parse().ok()).filter(|p| *p > 0).unwrap_or(1);
+    Some((profile, SpeedTestResult {
 	timestamp: Some(parse_timestr(&f[0]).ok()?),
 	latency_idle: ms(&f[1]),
 	latency_download: ms(&f[2]),
@@ -1519,17 +1827,19 @@ fn parse_result_line(line: &str) -> Option<SpeedTestResult> {
 	server_descr: f[8].clone(),
 	server_host: f[9].clone(),
 	error: Some(f[10].clone()).filter(|e| e.len() > 0),
-    })
+    }))
 }
 
-// the last test from the results file, from before a restart, so the first
-// test waits for the rest of its interval and the last result is there
-fn restore_last_test(state: &Arc<Mutex<SpeedTestState>>) {
-    let filename = match state.lock() {
-	Ok(state) => state.config.store_filename.clone(),
+// the last tests of the profiles from first on from the results file, from
+// before a restart, so their first tests wait for the rest of their intervals
+// and the last results are there
+fn restore_last_tests(state: &Arc<Mutex<SpeedTestState>>, first: usize) {
+    let (filename, count) = match state.lock() {
+	Ok(state) => (state.config.store_filename.clone(), state.profiles.len()),
 	Err(_) => return,
     };
-    // the end of the file is enough, it can hold years of results
+    // the end of the file is enough, it can hold years of results. A profile
+    // tested far less often than the others can miss it and test right away
     let mut tail = vec!();
     if let Ok(mut f) = std::fs::File::open(&filename) {
 	let size = f.metadata().map(|m| m.len()).unwrap_or(0);
@@ -1537,25 +1847,46 @@ fn restore_last_test(state: &Arc<Mutex<SpeedTestState>>) {
 	let _ = std::io::Read::read_to_end(&mut f, &mut tail);
     }
     let tail = String::from_utf8_lossy(&tail);
-    let mut results = tail.lines().rev().filter_map(parse_result_line);
-    let last = match results.next() {
-	Some(r) => r,
-	None => return,
-    };
     let measured = |r: &SpeedTestResult| r.latency_idle.is_some() || r.download.is_some() || r.upload.is_some();
-    let time = last.timestamp.map(|t| t as u64);
-    let (error, result) = match measured(&last) {
-	true => (None, Some(last)),
-	// the result before the failure is still the last one there is
-	false => (last.error, results.find(measured)),
-    };
-    pr!("last test at {}", timestr(Duration::from_secs(time.unwrap_or_default())));
+    let mut times = vec![None; count];
+    let mut errors = vec![None; count];
+    let mut results: Vec<Option<SpeedTestResult>> = (0..count).map(|_| None).collect();
+    for (profile, r) in tail.lines().rev().filter_map(parse_result_line) {
+	let i = profile - 1;
+	if i < first || i >= count {
+	    continue;
+	}
+	let newest = times[i].is_none();
+	if newest {
+	    times[i] = r.timestamp.map(|t| t as u64);
+	}
+	if measured(&r) {
+	    // the result before a failure is still the last one there is
+	    results[i].get_or_insert(r);
+	}
+	else if newest {
+	    errors[i] = r.error;
+	}
+    }
     if let Ok(mut state) = state.lock() {
-	// waiting for the first test, not testing yet
-	state.status = "idle".to_string();
-	state.last_test_time = time;
-	state.last_error = error;
-	state.last_result = result;
+	for ((p, (time, error)), result) in state.profiles.iter_mut().zip(times.into_iter().zip(errors)).zip(results).skip(first) {
+	    if let Some(time) = time {
+		pr!("last test at {}", timestr(Duration::from_secs(time)));
+		p.last_test_time = Some(time);
+		p.last_start = Some(std::time::UNIX_EPOCH + Duration::from_secs(time));
+		// the gauges show the last test as they did when it ended, a test
+		// that measured nothing left them empty
+		if let (None, Some(r)) = (&error, &result) {
+		    p.gauge_latency = r.latency_idle;
+		    p.gauge_download_mbps = r.download;
+		    p.gauge_download_latency = r.latency_download;
+		    p.gauge_upload_mbps = r.upload;
+		    p.gauge_upload_latency = r.latency_upload;
+		}
+		p.last_error = error;
+		p.last_result = result;
+	    }
+	}
     }
 }
 
@@ -1680,32 +2011,38 @@ fn server_send_results(stream: &mut std::net::TcpStream, state: &Arc<Mutex<Speed
 
 fn server_get_status(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
     let state = state.lock()?;
-    let mut str = format!("{{ \"state\":\"{}\"", state.status);
-    if let Some(x) = state.idle_until {
-	str += &format!(", \"idle_time\": {}", (x - Instant::now()).as_secs());
+    let overall = state.profiles.iter().map(|p| p.status.as_str()).find(|s| *s != "idle").unwrap_or("idle");
+    let mut str = format!("{{ \"state\":\"{overall}\", \"profiles\":[");
+    for (i, p) in state.profiles.iter().enumerate() {
+	let name = state.config.profiles.get(i).map(|c| c.name.as_str()).unwrap_or("");
+	str += &format!("{}{{ \"name\":{}, \"state\":\"{}\"", if i > 0 { ", " } else { "" }, json_str(name), p.status);
+	if let Some(x) = p.idle_until {
+	    str += &format!(", \"idle_time\": {}", (x - Instant::now()).as_secs());
+	}
+	if let Some(x) = p.gauge_latency {
+	    str += &format!(", \"latency\": {}", dur_to_str(Some(x)));
+	}
+	if let Some(x) = p.gauge_download_progress {
+	    str += &format!(", \"download_progress\": {}", x);
+	}
+	if let Some(x) = p.gauge_download_mbps {
+	    str += &format!(", \"download_mbps\": {}", float_to_str(x));
+	}
+	if let Some(x) = p.gauge_download_latency {
+	    str += &format!(", \"download_latency\": {}", dur_to_str(Some(x)));
+	}
+	if let Some(x) = p.gauge_upload_progress {
+	    str += &format!(", \"upload_progress\": {}", x);
+	}
+	if let Some(x) = p.gauge_upload_mbps {
+	    str += &format!(", \"upload_mbps\": {}", float_to_str(x));
+	}
+	if let Some(x) = p.gauge_upload_latency {
+	    str += &format!(", \"upload_latency\": {}", dur_to_str(Some(x)));
+	}
+	str += " }";
     }
-    if let Some(x) = state.gauge_latency {
-	str += &format!(", \"latency\": {}", dur_to_str(Some(x)));
-    }
-    if let Some(x) = state.gauge_download_progress {
-	str += &format!(", \"download_progress\": {}", x);
-    }
-    if let Some(x) = state.gauge_download_mbps {
-	str += &format!(", \"download_mbps\": {}", float_to_str(x));
-    }
-    if let Some(x) = state.gauge_download_latency {
-	str += &format!(", \"download_latency\": {}", dur_to_str(Some(x)));
-    }
-    if let Some(x) = state.gauge_upload_progress {
-	str += &format!(", \"upload_progress\": {}", x);
-    }
-    if let Some(x) = state.gauge_upload_mbps {
-	str += &format!(", \"upload_mbps\": {}", float_to_str(x));
-    }
-    if let Some(x) = state.gauge_upload_latency {
-	str += &format!(", \"upload_latency\": {}", dur_to_str(Some(x)));
-    }
-    str += " }";
+    str += "] }";
     Ok(str)
 }
 
@@ -1723,37 +2060,59 @@ fn prom_family(str: &mut String, name: &str, kind: &str, help: &str, samples: &[
     }
 }
 
+// profile is the label with several profiles, a lone one keeps its series as they were
+fn prom_labels(profile: Option<&str>, labels: &[(&str, &str)]) -> String {
+    let profile = profile.map(|p| ("profile", p));
+    let all: Vec<_> = profile.iter().chain(labels.iter()).map(|(k, v)| format!("{k}=\"{}\"", prom_label(v))).collect();
+    match all.len() {
+	0 => String::new(),
+	_ => format!("{{{}}}", all.join(",")),
+    }
+}
+
 // prometheus text format, the speeds and latencies are the ones of the last
-// successful test and are left out until there is one
+// successful test of every profile and are left out until there is one
 fn server_get_metrics(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, ErrorString> {
     let state = state.lock()?;
+    let several = state.profiles.len() > 1;
+    let profiles: Vec<_> = state.profiles.iter().enumerate().map(|(i, p)| {
+	(state.config.profiles.get(i).filter(|_| several).map(|c| c.name.as_str()), p)
+    }).collect();
+    let samples = |get: &dyn Fn(&ProfileState) -> Option<f64>| -> Vec<(String, f64)> {
+	profiles.iter().filter_map(|(name, p)| get(p).map(|x| (prom_labels(*name, &[]), x))).collect()
+    };
+    let result_time = |p: &ProfileState| p.last_result.as_ref().and_then(|r| r.timestamp).map(|t| t as f64);
+    let bps = |x: Option<f32>| x.map(|x| (x as f64 * 1000.0).round() * 1000.0);
+
     let mut str = String::new();
     prom_family(&mut str, "speedketchup_build_info", "gauge", "Version of speedketchup.",
 		&[(format!("{{version=\"{PKG_VERSION}\"}}"), 1.0)]);
     prom_family(&mut str, "speedketchup_tests_total", "counter", "Speed tests run since start.",
-		&[(String::new(), state.tests_total as f64)]);
+		&samples(&|p| Some(p.tests_total as f64)));
     prom_family(&mut str, "speedketchup_test_failures_total", "counter", "Speed tests that failed since start.",
-		&[(String::new(), state.test_failures_total as f64)]);
-    if let Some(t) = state.last_test_time {
-	prom_family(&mut str, "speedketchup_last_test_timestamp_seconds", "gauge", "Time the last test finished, failed or not.",
-		    &[(String::new(), t as f64)]);
-    }
-    if let Some(r) = &state.last_result {
-	if let Some(t) = r.timestamp {
-	    prom_family(&mut str, "speedketchup_last_success_timestamp_seconds", "gauge", "Time the last successful test finished.",
-			&[(String::new(), t as f64)]);
+		&samples(&|p| Some(p.test_failures_total as f64)));
+    prom_family(&mut str, "speedketchup_last_test_timestamp_seconds", "gauge", "Time the last test finished, failed or not.",
+		&samples(&|p| p.last_test_time.map(|t| t as f64)));
+    prom_family(&mut str, "speedketchup_last_success_timestamp_seconds", "gauge", "Time the last successful test finished.",
+		&samples(&result_time));
+    prom_family(&mut str, "speedketchup_download_bits_per_second", "gauge", "Download speed of the last successful test.",
+		&samples(&|p| bps(p.last_result.as_ref().and_then(|r| r.download))));
+    prom_family(&mut str, "speedketchup_upload_bits_per_second", "gauge", "Upload speed of the last successful test.",
+		&samples(&|p| bps(p.last_result.as_ref().and_then(|r| r.upload))));
+    let mut latencies = vec!();
+    let mut infos = vec!();
+    for (name, p) in &profiles {
+	if let Some(r) = &p.last_result {
+	    for (load, d) in [("idle", r.latency_idle), ("download", r.latency_download), ("upload", r.latency_upload)] {
+		if let Some(d) = d {
+		    latencies.push((prom_labels(*name, &[("load", load)]), d.as_secs_f64()));
+		}
+	    }
+	    infos.push((prom_labels(*name, &[("server", &r.server_descr), ("server_host", &r.server_host), ("isp", &r.client_isp)]), 1.0));
 	}
-	let bps = |x: Option<f32>| x.map(|x| (String::new(), (x as f64 * 1000.0).round() * 1000.0)).into_iter().collect::<Vec<_>>();
-	prom_family(&mut str, "speedketchup_download_bits_per_second", "gauge", "Download speed of the last successful test.", &bps(r.download));
-	prom_family(&mut str, "speedketchup_upload_bits_per_second", "gauge", "Upload speed of the last successful test.", &bps(r.upload));
-	let latencies: Vec<_> = [("idle", r.latency_idle), ("download", r.latency_download), ("upload", r.latency_upload)].iter()
-	    .filter_map(|(load, d)| d.map(|d| (format!("{{load=\"{load}\"}}"), d.as_secs_f64())))
-	    .collect();
-	prom_family(&mut str, "speedketchup_latency_seconds", "gauge", "Latency of the last successful test, idle and while downloading or uploading.", &latencies);
-	prom_family(&mut str, "speedketchup_last_test_info", "gauge", "Speedtest server and ISP of the last successful test.",
-		    &[(format!("{{server=\"{}\",server_host=\"{}\",isp=\"{}\"}}",
-			       prom_label(&r.server_descr), prom_label(&r.server_host), prom_label(&r.client_isp)), 1.0)]);
     }
+    prom_family(&mut str, "speedketchup_latency_seconds", "gauge", "Latency of the last successful test, idle and while downloading or uploading.", &latencies);
+    prom_family(&mut str, "speedketchup_last_test_info", "gauge", "Speedtest server and ISP of the last successful test.", &infos);
     Ok(str)
 }
 
@@ -1799,12 +2158,16 @@ fn server_request(url: &[u8], content: &[u8], mut stream: &mut std::net::TcpStre
 	},
 	"start" => {
 	    pr!("start");
-	    request_test(state);
+	    // the number of the profile, counting from 1, without it all of them
+	    let profile = query.split('&').find_map(|p| p.strip_prefix("profile=")).and_then(|v| v.parse::<usize>().ok());
+	    request_test(state, profile.map(|p| p.wrapping_sub(1)));
 	    ("".as_bytes(), "text/plain", 0)
 	},
 	"stop" => {
 	    pr!("stop");
-	    state.lock()?.test_requested = Some(false);
+	    for p in state.lock()?.profiles.iter_mut() {
+		p.test_requested = Some(false);
+	    }
 	    ("".as_bytes(), "text/plain", 0)
 	},
 	"speedtest/latency.txt" => {
@@ -1988,7 +2351,7 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 //use std::os::fd::AsRawFd;
 // the status of a speedketchup answers on the port, not some other program
 fn is_speedketchup(port: u16) -> bool {
-    match http_get(&format!("127.0.0.1:{port}"), "/status") {
+    match http_get(&format!("127.0.0.1:{port}"), &NetOpts::default(), "/status") {
 	Ok(resp) => http_status_code(&resp).ok() == Some(200) && memmem(&resp, b"{ \"state\":").is_some(),
 	Err(_) => false,
     }
@@ -2083,6 +2446,12 @@ const HELP: &str = "usage: speedketchup [options]
 		port: 1883 by default, plain mqtt only
 	-mu|--mqtt-user <user>: user name for the mqtt broker
 	-mp|--mqtt-password <password>: password for the mqtt broker
+	-n|--name <name>: name of the test profile, shown on the web page
+	-if|--interface <interface>: network interface to test over
+		windows: the Idx of 'netsh interface ipv4 show interfaces'
+	-sa|--src-addr <addr>: source address to test from
+	-ds|--dscp <0-63>: dscp value of the test traffic, for the router to pick a wan by, not on windows
+	-ao|--allow-overlapping-tests <yes|no>: run the tests of different profiles at the same time, no by default
 	--tray: windows only, run as the tray icon, as when started from the start menu
 
 every option can also be given as an environment variable, command line options
@@ -2092,7 +2461,14 @@ take precedence:
 	SPEEDKETCHUP_UPLOAD_DURATION, SPEEDKETCHUP_DOWNLOAD_CONNECTIONS,
 	SPEEDKETCHUP_UPLOAD_CONNECTIONS, SPEEDKETCHUP_INFLUX_URL,
 	SPEEDKETCHUP_INFLUX_TOKEN, SPEEDKETCHUP_MQTT, SPEEDKETCHUP_MQTT_USER,
-	SPEEDKETCHUP_MQTT_PASSWORD
+	SPEEDKETCHUP_MQTT_PASSWORD, SPEEDKETCHUP_NAME, SPEEDKETCHUP_INTERFACE,
+	SPEEDKETCHUP_SRC_ADDR, SPEEDKETCHUP_DSCP, SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS
+
+several test profiles, eg one for every wan, are given as comma separated values
+of the name, interval, server, duration, connections, interface, src-addr and dscp
+options, one for every profile. An empty one is the default, a single value is
+for all the profiles:
+	speedketchup -n wan1,wan2 -sa 192.0.2.1,198.51.100.1 -i 10,30
 ";
 fn server_with_port(host: &str) -> String {
     match host.find(":") {
@@ -2123,6 +2499,32 @@ fn var_num<T: std::str::FromStr>(var: &dyn Fn(&str) -> Option<String>, name: &st
     }
 }
 
+const MAX_PROFILES: usize = 16;
+
+// the comma separated values of a setting, one for every profile, a single
+// value is for all of them, an empty one or a setting not set is the default
+fn profile_values(var: &dyn Fn(&str) -> Option<String>, name: &str, count: usize) -> Result<Vec<Option<String>>, String> {
+    let values: Vec<String> = match var_str(var, name) {
+	None => return Ok(vec![None; count]),
+	Some(val) => val.split(',').map(|v| v.trim().to_string()).collect(),
+    };
+    if values.len() != 1 && values.len() != count {
+	return Err(format!("{name} has {} values for {count} profiles", values.len()));
+    }
+    Ok((0..count).map(|i| Some(values[if values.len() == 1 { 0 } else { i }].clone()).filter(|v| v.len() > 0)).collect())
+}
+
+fn parse_value<T: std::str::FromStr>(name: &str, val: &str) -> Result<T, String> {
+    val.parse().map_err(|_| format!("bad {name} value '{val}'"))
+}
+
+const PROFILE_VARS: &[&str] = &[
+    "SPEEDKETCHUP_NAME", "SPEEDKETCHUP_INTERVAL", "SPEEDKETCHUP_SERVER",
+    "SPEEDKETCHUP_DOWNLOAD_DURATION", "SPEEDKETCHUP_DOWNLOAD_CONNECTIONS",
+    "SPEEDKETCHUP_UPLOAD_DURATION", "SPEEDKETCHUP_UPLOAD_CONNECTIONS",
+    "SPEEDKETCHUP_INTERFACE", "SPEEDKETCHUP_SRC_ADDR", "SPEEDKETCHUP_DSCP",
+];
+
 // the SPEEDKETCHUP_* settings over config, var looks one of them up, a bad
 // value is left out and the first one is the error
 fn config_from_vars(config: &mut SpeedTestConfig, var: &dyn Fn(&str) -> Option<String>) -> Result<(), String> {
@@ -2130,20 +2532,74 @@ fn config_from_vars(config: &mut SpeedTestConfig, var: &dyn Fn(&str) -> Option<S
     macro_rules! num {
 	($name:literal) => { var_num(var, $name).unwrap_or_else(|e| { error.get_or_insert(e); None }) };
     }
-    if let Some(x) = num!("SPEEDKETCHUP_INTERVAL") { config.test_interval = x; }
     if let Some(x) = var_str(var, "SPEEDKETCHUP_FILE") { config.store_filename = x; }
     if let Some(x) = var_str(var, "SPEEDKETCHUP_ADDRESS") { config.listen_address = x; }
     if let Some(x) = num!("SPEEDKETCHUP_PORT") { config.listen_port = x; }
-    if let Some(x) = var_str(var, "SPEEDKETCHUP_SERVER") { config.server_host = Some(server_with_port(&x)); }
-    if let Some(x) = num!("SPEEDKETCHUP_DOWNLOAD_DURATION") { config.download_duration = x; }
-    if let Some(x) = num!("SPEEDKETCHUP_UPLOAD_DURATION") { config.upload_duration = x; }
-    if let Some(x) = num!("SPEEDKETCHUP_DOWNLOAD_CONNECTIONS") { config.download_connections = x; }
-    if let Some(x) = num!("SPEEDKETCHUP_UPLOAD_CONNECTIONS") { config.upload_connections = x; }
     if let Some(x) = var_str(var, "SPEEDKETCHUP_INFLUX_URL") { config.influx_url = Some(x); }
     if let Some(x) = var_str(var, "SPEEDKETCHUP_INFLUX_TOKEN") { config.influx_token = Some(x); }
     if let Some(x) = var_str(var, "SPEEDKETCHUP_MQTT") { config.mqtt_host = Some(mqtt_with_port(&x)); }
     if let Some(x) = var_str(var, "SPEEDKETCHUP_MQTT_USER") { config.mqtt_user = Some(x); }
     if let Some(x) = var_str(var, "SPEEDKETCHUP_MQTT_PASSWORD") { config.mqtt_password = Some(x); }
+    if let Some(x) = var_str(var, "SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS") {
+	match x.to_ascii_lowercase().as_str() {
+	    "yes" | "true" | "on" | "1" => config.allow_overlapping_tests = true,
+	    "no" | "false" | "off" | "0" => config.allow_overlapping_tests = false,
+	    _ => { error.get_or_insert(format!("bad SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS value '{x}'")); },
+	}
+    }
+
+    let longest = PROFILE_VARS.iter().filter_map(|name| var_str(var, name)).map(|v| v.split(',').count()).max().unwrap_or(1);
+    if longest > MAX_PROFILES {
+	error.get_or_insert(format!("{longest} profiles, at most {MAX_PROFILES} are supported"));
+    }
+    let count = longest.min(MAX_PROFILES);
+    let mut base = config.profiles[0].clone();
+    base.name.clear();
+    let mut profiles = vec![base; count];
+    let mut set = |name: &str, f: &dyn Fn(&mut TestProfile, &str) -> Result<(), String>| {
+	match profile_values(var, name, count) {
+	    Err(e) => { error.get_or_insert(e); },
+	    Ok(values) => for (p, value) in profiles.iter_mut().zip(values) {
+		if let Some(value) = value {
+		    if let Err(e) = f(p, &value) {
+			error.get_or_insert(e);
+		    }
+		}
+	    },
+	}
+    };
+    set("SPEEDKETCHUP_NAME", &|p, v| { p.name = v.to_string(); Ok(()) });
+    set("SPEEDKETCHUP_INTERVAL", &|p, v| { p.test_interval = parse_value("SPEEDKETCHUP_INTERVAL", v)?; Ok(()) });
+    set("SPEEDKETCHUP_SERVER", &|p, v| { p.server_host = Some(server_with_port(v)); Ok(()) });
+    set("SPEEDKETCHUP_DOWNLOAD_DURATION", &|p, v| { p.download_duration = parse_value("SPEEDKETCHUP_DOWNLOAD_DURATION", v)?; Ok(()) });
+    set("SPEEDKETCHUP_UPLOAD_DURATION", &|p, v| { p.upload_duration = parse_value("SPEEDKETCHUP_UPLOAD_DURATION", v)?; Ok(()) });
+    set("SPEEDKETCHUP_DOWNLOAD_CONNECTIONS", &|p, v| { p.download_connections = parse_value("SPEEDKETCHUP_DOWNLOAD_CONNECTIONS", v)?; Ok(()) });
+    set("SPEEDKETCHUP_UPLOAD_CONNECTIONS", &|p, v| { p.upload_connections = parse_value("SPEEDKETCHUP_UPLOAD_CONNECTIONS", v)?; Ok(()) });
+    set("SPEEDKETCHUP_INTERFACE", &|p, v| { p.net.interface = Some(v.to_string()); Ok(()) });
+    set("SPEEDKETCHUP_SRC_ADDR", &|p, v| { p.net.src_addr = Some(parse_value("SPEEDKETCHUP_SRC_ADDR", v)?); Ok(()) });
+    set("SPEEDKETCHUP_DSCP", &|p, v| {
+	match parse_value("SPEEDKETCHUP_DSCP", v)? {
+	    x if x > 63 => Err(format!("bad SPEEDKETCHUP_DSCP value '{v}', it is 0 to 63")),
+	    x => { p.net.dscp = Some(x); Ok(()) },
+	}
+    });
+    // the names tell the profiles apart everywhere
+    let mut names: Vec<_> = profiles.iter().map(|p| p.name.as_str()).filter(|n| n.len() > 0).collect();
+    let named = names.len();
+    names.sort();
+    names.dedup();
+    if names.len() != named {
+	error.get_or_insert("SPEEDKETCHUP_NAME has the same name for several profiles".to_string());
+	for p in profiles.iter_mut() {
+	    p.name.clear();
+	}
+    }
+    for (i, p) in profiles.iter_mut().enumerate() {
+	if p.name.len() == 0 {
+	    p.name = format!("Profile {}", i + 1);
+	}
+    }
+    config.profiles = profiles;
     match error {
 	None => Ok(()),
 	Some(e) => Err(e),
@@ -2166,6 +2622,11 @@ const OPTIONS: &[(&str, &str, &str)] = &[
     ("-mq", "--mqtt", "SPEEDKETCHUP_MQTT"),
     ("-mu", "--mqtt-user", "SPEEDKETCHUP_MQTT_USER"),
     ("-mp", "--mqtt-password", "SPEEDKETCHUP_MQTT_PASSWORD"),
+    ("-n", "--name", "SPEEDKETCHUP_NAME"),
+    ("-if", "--interface", "SPEEDKETCHUP_INTERFACE"),
+    ("-sa", "--src-addr", "SPEEDKETCHUP_SRC_ADDR"),
+    ("-ds", "--dscp", "SPEEDKETCHUP_DSCP"),
+    ("-ao", "--allow-overlapping-tests", "SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS"),
 ];
 
 // the settings from the command line, kept for the app to read the
@@ -2206,15 +2667,20 @@ fn setting(name: &str, file: &[(String, String)]) -> Option<String> {
 
 fn default_config() -> SpeedTestConfig {
     SpeedTestConfig {
-	test_interval: 10,
+	profiles: vec![TestProfile {
+	    name: "Profile 1".to_string(),
+	    test_interval: 10,
+	    server_host: None,
+	    download_duration: 10,
+	    download_connections: 8,
+	    upload_duration: 10,
+	    upload_connections: 8,
+	    net: NetOpts::default(),
+	}],
+	allow_overlapping_tests: false,
 	store_filename: "speedketchup-results.csv".to_string(),
 	listen_port: 8288,
 	listen_address: "127.0.0.1".to_string(),
-	server_host: None,
-	download_duration: 10,
-	download_connections: 8,
-	upload_duration: 10,
-	upload_connections: 8,
 	influx_url: None,
 	influx_token: None,
 	mqtt_host: None,
@@ -2233,10 +2699,25 @@ fn check_config(config: &SpeedTestConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn request_test(state: &Arc<Mutex<SpeedTestState>>) {
+// the test of one profile or, without one, of all of them
+fn request_test(state: &Arc<Mutex<SpeedTestState>>, profile: Option<usize>) {
     if let Ok(mut state) = state.lock() {
-	state.test_requested = Some(true);
+	for (i, p) in state.profiles.iter_mut().enumerate() {
+	    if profile == None || profile == Some(i) {
+		p.test_requested = Some(true);
+	    }
+	}
 	let _ = state.to_main_sender.send(());
+    }
+}
+
+// a state for every profile of the config, after new settings
+#[cfg(any(target_os = "macos", windows))]
+fn sync_profile_states(state: &mut SpeedTestState) {
+    let count = state.config.profiles.len();
+    state.profiles.truncate(count);
+    while state.profiles.len() < count {
+	state.profiles.push(ProfileState::new());
     }
 }
 
@@ -2300,16 +2781,36 @@ fn main() {
 
     std::env::set_var("RUST_BACKTRACE", "1");
     println!("speedketchup parameters (run with '-h' to see options):");
-    println!("{ATTR_GREEN}test interval: {ATTR_BOLD}{}m{ATTR_RESET}", config.test_interval);
     println!("{ATTR_GREEN}results file: {ATTR_BOLD}{}{ATTR_RESET}", config.store_filename);
     println!("{ATTR_GREEN}listen address: {ATTR_BOLD}{}:{}{ATTR_RESET}",
 	     config.listen_address, config.listen_port);
-    println!("{ATTR_GREEN}server: {ATTR_BOLD}{}{ATTR_RESET}",
-	     match &config.server_host { None => "<automatic>", Some(x) => &x });
-    println!("{ATTR_GREEN}download-duration: {ATTR_BOLD}{}s{ATTR_RESET}", config.download_duration);
-    println!("{ATTR_GREEN}download-connections: {ATTR_BOLD}{}{ATTR_RESET}", config.download_connections);
-    println!("{ATTR_GREEN}upload-duration: {ATTR_BOLD}{}s{ATTR_RESET}", config.upload_duration);
-    println!("{ATTR_GREEN}upload-connections: {ATTR_BOLD}{}{ATTR_RESET}", config.upload_connections);
+    for (i, p) in config.profiles.iter().enumerate() {
+	if config.profiles.len() > 1 {
+	    println!("{ATTR_GREEN}profile {}: {ATTR_BOLD}{}{ATTR_RESET}", i + 1, p.name);
+	}
+	println!("{ATTR_GREEN}test interval: {ATTR_BOLD}{}m{ATTR_RESET}", p.test_interval);
+	println!("{ATTR_GREEN}server: {ATTR_BOLD}{}{ATTR_RESET}",
+		 match &p.server_host { None => "<automatic>", Some(x) => &x });
+	println!("{ATTR_GREEN}download-duration: {ATTR_BOLD}{}s{ATTR_RESET}", p.download_duration);
+	println!("{ATTR_GREEN}download-connections: {ATTR_BOLD}{}{ATTR_RESET}", p.download_connections);
+	println!("{ATTR_GREEN}upload-duration: {ATTR_BOLD}{}s{ATTR_RESET}", p.upload_duration);
+	println!("{ATTR_GREEN}upload-connections: {ATTR_BOLD}{}{ATTR_RESET}", p.upload_connections);
+	if let Some(x) = &p.net.interface {
+	    println!("{ATTR_GREEN}interface: {ATTR_BOLD}{x}{ATTR_RESET}");
+	}
+	if let Some(x) = &p.net.src_addr {
+	    println!("{ATTR_GREEN}source address: {ATTR_BOLD}{x}{ATTR_RESET}");
+	}
+	if let Some(x) = &p.net.dscp {
+	    println!("{ATTR_GREEN}dscp: {ATTR_BOLD}{x}{ATTR_RESET}");
+	    if cfg!(windows) {
+		pr!("windows ignores the dscp value of a socket, a QoS policy sets it");
+	    }
+	}
+    }
+    if config.profiles.len() > 1 {
+	println!("{ATTR_GREEN}overlapping tests: {ATTR_BOLD}{}{ATTR_RESET}", if config.allow_overlapping_tests { "yes" } else { "no" });
+    }
     if let Some(url) = &config.influx_url {
 	// leave out the query, it can hold v1 u= and p= credentials
 	let (host, path) = url_host_and_path(url);
@@ -2351,29 +2852,16 @@ fn main() {
 
     let (tx, rx) = mpsc::channel();
     let state = Arc::new(Mutex::new(SpeedTestState {
-	status: String::new(),
-	idle_until: None,
-	gauge_latency: None,
-	gauge_download_progress: None,
-	gauge_download_mbps: None,
-	gauge_download_latency: None,
-	gauge_upload_progress: None,
-	gauge_upload_mbps: None,
-	gauge_upload_latency: None,
+	profiles: config.profiles.iter().map(|_| ProfileState::new()).collect(),
 	config: config,
-	last_result: None,
-	last_test_time: None,
-	last_error: None,
-	tests_total: 0,
-	test_failures_total: 0,
+	running_tests: 0,
 	to_conn_senders: HashMap::new(),
 	to_main_sender: tx,
-	test_requested: None,
 	server_id: 0,
 	serving: None,
     }));
 
-    restore_last_test(&state);
+    restore_last_tests(&state, 0);
     if let Some(listener) = listener {
 	start_server(listener, &state);
     }
@@ -2391,102 +2879,151 @@ fn main() {
     test_loop(state, rx);
 }
 
-// sleeps until the interval from the last test is over, a test asked for
-// ends it early, a new interval in the settings changes it
-fn wait_for_next_test(state: &Arc<Mutex<SpeedTestState>>, rx: &mpsc::Receiver<()>, last: std::time::SystemTime) {
-    loop {
-	let interval = match state.lock() {
-	    Ok(state) if state.test_requested != Some(true) => Duration::from_secs(state.config.test_interval * 60),
-	    _ => return,
-	};
-	let dur = match (last + interval).duration_since(std::time::SystemTime::now()) {
-	    Ok(dur) if !dur.is_zero() => dur,
-	    _ => return,
-	};
-	if let Ok(mut state) = state.lock() {
-	    state.idle_until = Some(Instant::now() + dur);
+// runs a test of a profile and saves its result, in a thread of its own
+fn run_test(state: &Arc<Mutex<SpeedTestState>>, idx: usize, profile: &TestProfile) {
+    let mut result = speedtest(profile, idx, state);
+    match &result {
+	Err(err) => {
+	    pr!("speedtest error:{}", err);
 	}
-	pr!("sleep for {:?}", dur);
-	let _ = rx.recv_timeout(dur);
+	Ok(r) => {
+//		pr!("result: {:#?}", r);
+	    pr!("speedtest latency:idle-{}ms/dl-{}ms/ul-{}ms download:{}Mbps upload:{}Mbps client_ip:{} isp:{} server:{}",
+		dur_to_str(r.latency_idle),
+		dur_to_str(r.latency_download),
+		dur_to_str(r.latency_upload),
+		opt_float_to_str(r.download),
+		opt_float_to_str(r.upload),
+		opt_ipv6addr_to_str(&r.client_public_ip),
+		r.client_isp, r.server_host);
+	}
+    };
+    let mut filename = String::new();
+    let mut influx = None;
+    let mut mqtt_config = None;
+    let mut several = false;
+    if let Ok(mut state) = state.lock() {
+	if state.config.mqtt_host.is_some() {
+	    mqtt_config = Some(state.config.clone());
+	}
+	influx = state.config.influx_url.clone().map(|url| (url, state.config.influx_token.clone()));
+	filename = state.config.store_filename.clone();
+	several = state.config.profiles.len() > 1;
+	if let Some(p) = state.profiles.get_mut(idx) {
+	    p.status = "save result".to_string();
+	    p.gauge_download_progress = None;
+	    p.gauge_upload_progress = None;
+	}
+    }
+    save_result(&filename, idx + 1, &mut result);
+    if let Some((url, token)) = influx {
+	if let Err(e) = influx_write(&url, &token, Some(profile.name.as_str()).filter(|_| several), &result) {
+	    pr!("influx write: {e}");
+	}
+    }
+    if let Some(cfg) = mqtt_config {
+	if let Err(e) = mqtt_publish(&cfg, &mqtt_id(idx), &mqtt_messages(profile, idx, several, &result)) {
+	    pr!("mqtt publish: {e}");
+	}
+    }
+    if let Ok(mut state) = state.lock() {
+	if let Some(p) = state.profiles.get_mut(idx) {
+	    p.tests_total += 1;
+	    p.last_test_time = Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs());
+	    match result {
+		Ok(r) => {
+		    p.last_result = Some(r);
+		    p.last_error = None;
+		},
+		Err(e) => {
+		    p.test_failures_total += 1;
+		    p.last_error = Some(e.to_string());
+		},
+	    }
+	    p.running = false;
+	    p.status = "idle".to_string();
+	}
+	state.running_tests -= 1;
+	notify_connections(&state);
+	// the test loop starts the next one
+	let _ = state.to_main_sender.send(());
+    }
+}
+
+// queues the profiles whose tests are due, oldest first as they waited the
+// longest, returns how long until the next one is
+fn queue_due_tests(state: &mut SpeedTestState) -> Option<Duration> {
+    let now = std::time::SystemTime::now();
+    let mut wait: Option<Duration> = None;
+    let SpeedTestState { config, profiles, .. } = state;
+    for (p, cfg) in profiles.iter_mut().zip(config.profiles.iter()) {
+	if p.running || p.queued.is_some() {
+	    continue;
+	}
+	let due = p.last_start.map(|last| last + Duration::from_secs(cfg.test_interval * 60));
+	let requested = p.test_requested == Some(true);
+	let until = due.and_then(|due| due.duration_since(now).ok()).filter(|d| !d.is_zero());
+	match until {
+	    Some(until) if !requested => {
+		p.idle_until = Some(Instant::now() + until);
+		wait = Some(wait.map_or(until, |w| w.min(until)));
+	    },
+	    _ => {
+		p.queued = Some(if requested { now } else { due.unwrap_or(now) });
+		p.status = "queued".to_string();
+		p.idle_until = None;
+		p.test_requested = None;
+	    },
+	}
+    }
+    wait
+}
+
+// starts the queued tests the settings allow to run right now
+fn start_queued_tests(arc: &Arc<Mutex<SpeedTestState>>, state: &mut SpeedTestState) {
+    while state.config.allow_overlapping_tests || state.running_tests == 0 {
+	let next = state.profiles.iter().enumerate().filter_map(|(i, p)| p.queued.map(|t| (t, i))).min();
+	let idx = match next {
+	    Some((_, idx)) => idx,
+	    None => return,
+	};
+	let profile = state.config.profiles[idx].clone();
+	let p = &mut state.profiles[idx];
+	p.queued = None;
+	p.last_start = Some(std::time::SystemTime::now());
+	p.gauge_latency = None;
+	p.gauge_download_mbps = None;
+	p.gauge_download_latency = None;
+	p.gauge_upload_mbps = None;
+	p.gauge_upload_latency = None;
+	p.running = true;
+	state.running_tests += 1;
+	let test_state = arc.clone();
+	if let Err(e) = std::thread::Builder::new().name(format!("test {}", profile.name)).spawn(move || {
+	    run_test(&test_state, idx, &profile);
+	}) {
+	    pr!("thread failed {e}");
+	    let p = &mut state.profiles[idx];
+	    p.running = false;
+	    p.status = "idle".to_string();
+	    state.running_tests -= 1;
+	}
     }
 }
 
 fn test_loop(state: Arc<Mutex<SpeedTestState>>, rx: mpsc::Receiver<()>) -> ! {
-    // a test from before a restart counts, in wall clock time as the machine
-    // may have been off since
-    let mut last_test = state.lock().ok().and_then(|s| s.last_test_time).map(|t| std::time::UNIX_EPOCH + Duration::from_secs(t));
     loop {
-	if let Some(last) = last_test {
-	    wait_for_next_test(&state, &rx, last);
+	let mut wait = None;
+	if let Ok(mut locked) = state.lock() {
+	    wait = queue_due_tests(&mut locked);
+	    start_queued_tests(&state, &mut locked);
+	    notify_connections(&locked);
 	}
-	last_test = Some(std::time::SystemTime::now());
-	let mut server_host = None;
-	if let Ok(mut state) = state.lock() {
-	    server_host = state.config.server_host.clone();
-	    state.idle_until = None;
-	    state.test_requested = None;
-	    state.gauge_latency = None;
-	    state.gauge_download_mbps = None;
-	    state.gauge_download_latency = None;
-	    state.gauge_upload_mbps = None;
-	    state.gauge_upload_latency = None;
+	if let Some(dur) = wait {
+	    pr!("sleep for {:?}", dur);
 	}
-	let result = speedtest(&server_host, &state);
-	match &result {
-	    Err(err) => {
-		pr!("speedtest error:{}", err);
-	    }
-	    Ok(r) => {
-//		pr!("result: {:#?}", r);
-		pr!("speedtest latency:idle-{}ms/dl-{}ms/ul-{}ms download:{}Mbps upload:{}Mbps client_ip:{} isp:{} server:{}",
-		    dur_to_str(r.latency_idle),
-		    dur_to_str(r.latency_download),
-		    dur_to_str(r.latency_upload),
-		    opt_float_to_str(r.download),
-		    opt_float_to_str(r.upload),
-		    opt_ipv6addr_to_str(&r.client_public_ip),
-		    r.client_isp, r.server_host);
-	    }
-	};
-	let mut filename = String::new();
-	let mut influx = None;
-	let mut mqtt_config = None;
-	if let Ok(mut state) = state.lock() {
-	    if state.config.mqtt_host.is_some() {
-		mqtt_config = Some(state.config.clone());
-	    }
-	    influx = state.config.influx_url.clone().map(|url| (url, state.config.influx_token.clone()));
-	    state.status = "save result".to_string();
-	    filename = state.config.store_filename.clone();
-	    state.gauge_download_progress = None;
-	    state.gauge_upload_progress = None;
-	}
-	save_result(&filename, &result);
-	if let Some((url, token)) = influx {
-	    if let Err(e) = influx_write(&url, &token, &result) {
-		pr!("influx write: {e}");
-	    }
-	}
-	if let Some(cfg) = mqtt_config {
-	    if let Err(e) = mqtt_publish(&cfg, &mqtt_messages(&cfg, &result)) {
-		pr!("mqtt publish: {e}");
-	    }
-	}
-	if let Ok(mut state) = state.lock() {
-	    state.tests_total += 1;
-	    state.last_test_time = Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs());
-	    match result {
-		Ok(r) => {
-		    state.last_result = Some(r);
-		    state.last_error = None;
-		},
-		Err(e) => {
-		    state.test_failures_total += 1;
-		    state.last_error = Some(e.to_string());
-		},
-	    }
-	}
-        let _ = set_status(&state, "idle");
+	// a finished test, a test asked for or new settings end it early
+	let _ = rx.recv_timeout(wait.unwrap_or(Duration::from_secs(3600)));
     }
 }
 
@@ -2508,3 +3045,187 @@ fn my_panic(_info: &core::panic::PanicInfo) -> ! {
     }
 }
  */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(vars: &[(&str, &str)]) -> (SpeedTestConfig, Result<(), String>) {
+	let mut config = default_config();
+	let result = config_from_vars(&mut config, &|name: &str| {
+	    vars.iter().find(|(n, _)| *n == name).map(|(_, v)| v.to_string())
+	});
+	(config, result)
+    }
+
+    #[test]
+    fn no_settings_is_one_default_profile() {
+	let (c, r) = config(&[]);
+	assert!(r.is_ok());
+	assert!(c == default_config());
+    }
+
+    #[test]
+    fn lists_map_to_profiles() {
+	let (c, r) = config(&[
+	    ("SPEEDKETCHUP_NAME", "wan1,wan2"),
+	    ("SPEEDKETCHUP_INTERVAL", "5,30"),
+	    ("SPEEDKETCHUP_SERVER", ",host"),
+	    ("SPEEDKETCHUP_DOWNLOAD_DURATION", "7"),
+	    ("SPEEDKETCHUP_SRC_ADDR", "192.0.2.1,2001:db8::1"),
+	    ("SPEEDKETCHUP_DSCP", "10,46"),
+	    ("SPEEDKETCHUP_INTERFACE", "eth0,"),
+	]);
+	assert!(r.is_ok());
+	assert_eq!(c.profiles.len(), 2);
+	let (a, b) = (&c.profiles[0], &c.profiles[1]);
+	assert_eq!((a.name.as_str(), b.name.as_str()), ("wan1", "wan2"));
+	assert_eq!((a.test_interval, b.test_interval), (5, 30));
+	assert_eq!(a.server_host, None);
+	assert_eq!(b.server_host.as_deref(), Some("host:8080"));
+	assert_eq!((a.download_duration, b.download_duration), (7, 7));
+	assert_eq!(a.net.src_addr, "192.0.2.1".parse().ok());
+	assert_eq!(b.net.src_addr, "2001:db8::1".parse().ok());
+	assert_eq!((a.net.dscp, b.net.dscp), (Some(10), Some(46)));
+	assert_eq!((a.net.interface.as_deref(), b.net.interface.as_deref()), (Some("eth0"), None));
+    }
+
+    #[test]
+    fn default_names_count_from_one() {
+	let (c, _) = config(&[("SPEEDKETCHUP_INTERVAL", "5,6,7"), ("SPEEDKETCHUP_NAME", ",b,")]);
+	let names: Vec<_> = c.profiles.iter().map(|p| p.name.as_str()).collect();
+	assert_eq!(names, ["Profile 1", "b", "Profile 3"]);
+    }
+
+    #[test]
+    fn bad_values_are_errors_and_left_out() {
+	for vars in [
+	    [("SPEEDKETCHUP_INTERVAL", "5,6,7"), ("SPEEDKETCHUP_SERVER", "a,b")],
+	    [("SPEEDKETCHUP_INTERVAL", "5,6"), ("SPEEDKETCHUP_DSCP", "64")],
+	    [("SPEEDKETCHUP_INTERVAL", "5,6"), ("SPEEDKETCHUP_SRC_ADDR", "nope")],
+	    [("SPEEDKETCHUP_INTERVAL", "5,6"), ("SPEEDKETCHUP_NAME", "same")],
+	    [("SPEEDKETCHUP_INTERVAL", "5,x"), ("SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS", "1")],
+	    [("SPEEDKETCHUP_INTERVAL", "5"), ("SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS", "maybe")],
+	] {
+	    let (c, r) = config(&vars);
+	    assert!(r.is_err(), "{:?}", vars);
+	    assert!(c.profiles.iter().all(|p| p.server_host.is_none() && p.net == NetOpts::default()));
+	}
+    }
+
+    #[test]
+    fn too_many_profiles() {
+	let (c, r) = config(&[("SPEEDKETCHUP_NAME", &vec!["x"; MAX_PROFILES + 1].iter().enumerate().map(|(i, _)| i.to_string()).collect::<Vec<_>>().join(","))]);
+	assert!(r.is_err());
+	assert_eq!(c.profiles.len(), MAX_PROFILES);
+    }
+
+    #[test]
+    fn old_lines_are_of_the_first_profile() {
+	let (p, r) = parse_result_line("2026.11.01-10:00:00,10,20,30,40.5,50.5,192.0.2.1,\"ISP, Inc\",\"s\",host:8080,").unwrap();
+	assert_eq!(p, 1);
+	assert_eq!(r.client_isp, "ISP, Inc");
+	assert_eq!(r.download, Some(40.5));
+    }
+
+    #[test]
+    fn saved_lines_parse_back_with_their_profile() {
+	let dir = std::env::temp_dir().join(format!("speedketchup-test-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).unwrap();
+	let file = dir.join("results.csv");
+	let file = file.to_str().unwrap();
+	let _ = std::fs::remove_file(file);
+	let mut failed: Result<SpeedTestResult, ErrorString> = Err("a \"quoted\", error".into());
+	save_result(file, 2, &mut failed);
+	let text = std::fs::read_to_string(file).unwrap();
+	let mut lines = text.lines();
+	assert_eq!(lines.next().unwrap().split(',').count(), 12);
+	let (p, r) = parse_result_line(lines.next().unwrap()).unwrap();
+	assert_eq!(p, 2);
+	assert_eq!(r.error.as_deref(), Some("a \"quoted\", error"));
+	let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restart_restores_the_gauges_of_every_profile() {
+	let dir = std::env::temp_dir().join(format!("speedketchup-test-gauges-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).unwrap();
+	let file = dir.join("results.csv");
+	std::fs::write(&file, "Timestamp\n\
+	    2024.01.01-00:00:00,10,20,30,100.5,50.5,1.2.3.4,isp,descr,host:8080,,1\n\
+	    2024.01.01-00:01:00,11,21,31,200.5,60.5,1.2.3.4,isp,descr,host:8080,,2\n\
+	    2024.01.01-00:02:00,12,22,32,300.5,70.5,1.2.3.4,isp,descr,host:8080,,3\n\
+	    2024.01.01-00:03:00,,,,,,,,,,failed,3\n").unwrap();
+	let (mut c, r) = config(&[("SPEEDKETCHUP_NAME", "a,b,c")]);
+	assert!(r.is_ok());
+	c.store_filename = file.to_str().unwrap().to_string();
+	let state = Arc::new(Mutex::new(SpeedTestState {
+	    profiles: c.profiles.iter().map(|_| ProfileState::new()).collect(),
+	    config: c,
+	    running_tests: 0,
+	    to_conn_senders: HashMap::new(),
+	    to_main_sender: mpsc::channel().0,
+	    server_id: 0,
+	    serving: None,
+	}));
+	restore_last_tests(&state, 0);
+	let state = state.lock().unwrap();
+	let p = &state.profiles;
+	assert_eq!((p[0].gauge_download_mbps, p[0].gauge_upload_mbps), (Some(100.5), Some(50.5)));
+	assert_eq!(p[0].gauge_latency, Some(Duration::from_millis(10)));
+	assert_eq!(p[1].gauge_download_mbps, Some(200.5));
+	assert_eq!(p[1].gauge_upload_latency, Some(Duration::from_millis(31)));
+	// the last test of this one failed, the older result is not its gauges
+	assert_eq!(p[2].gauge_download_mbps, None);
+	assert!(p[2].last_result.is_some());
+	let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn prom_labels_only_with_something_to_label() {
+	assert_eq!(prom_labels(None, &[]), "");
+	assert_eq!(prom_labels(Some("wan\"1"), &[("load", "idle")]), "{profile=\"wan\\\"1\",load=\"idle\"}");
+    }
+
+    #[test]
+    fn sockaddr_has_the_port_and_address() {
+	let v4 = sockaddr(&"192.0.2.1:8080".parse().unwrap());
+	assert_eq!(v4.len(), 16);
+	assert_eq!(&v4[2..8], &[0x1f, 0x90, 192, 0, 2, 1]);
+	assert_eq!(sockaddr(&"[2001:db8::1]:80".parse().unwrap()).len(), 28);
+    }
+
+    #[test]
+    fn src_addr_connects_from_that_address() {
+	let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+	let addr = listener.local_addr().unwrap();
+	let net = NetOpts { interface: None, src_addr: "127.0.0.1".parse().ok(), dscp: Some(46) };
+	let stream = tcp_connect(&addr, &net, Duration::from_secs(3)).map_err(|e| e.to_string()).unwrap();
+	assert_eq!(stream.local_addr().unwrap().ip(), net.src_addr.unwrap());
+	assert_eq!(stream.peer_addr().unwrap(), addr);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dscp_is_set_on_the_socket() {
+	let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+	let net = NetOpts { interface: None, src_addr: None, dscp: Some(46) };
+	let stream = tcp_connect(&listener.local_addr().unwrap(), &net, Duration::from_secs(3)).map_err(|e| e.to_string()).unwrap();
+	let (mut tos, mut len) = (0 as libc::c_int, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+	let ret = unsafe {
+	    libc::getsockopt(std::os::fd::AsRawFd::as_raw_fd(&stream), libc::IPPROTO_IP, libc::IP_TOS, &mut tos as *mut _ as *mut _, &mut len)
+	};
+	assert_eq!((ret, tos & 0xfc), (0, 46 << 2));
+    }
+
+    #[test]
+    fn connect_failures_are_errors() {
+	let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+	let addr = listener.local_addr().unwrap();
+	drop(listener);
+	let net = NetOpts { interface: None, src_addr: None, dscp: Some(0) };
+	assert!(tcp_connect(&addr, &net, Duration::from_secs(3)).is_err());
+	let net = NetOpts { interface: Some("no-such-interface".to_string()), src_addr: None, dscp: None };
+	assert!(tcp_connect(&addr, &net, Duration::from_secs(3)).is_err());
+    }
+}

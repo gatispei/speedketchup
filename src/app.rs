@@ -37,6 +37,24 @@ pub const SETTINGS: &str = "# SpeedKetchup settings, one VARIABLE=value per line
 #SPEEDKETCHUP_MQTT=
 #SPEEDKETCHUP_MQTT_USER=
 #SPEEDKETCHUP_MQTT_PASSWORD=
+
+# Several test profiles, eg one for every wan: the interval, server, duration
+# and connections settings above and the ones below take comma separated values,
+# one for every profile, an empty one is the default, a single value is for all
+# of them, eg SPEEDKETCHUP_NAME=wan1,wan2
+
+# Names of the profiles
+#SPEEDKETCHUP_NAME=
+
+# Network interface and source address to test over, and the dscp value 0-63 of
+# the test traffic for the router to pick a wan by, not on windows. On windows
+# the interface is the Idx of netsh interface ipv4 show interfaces
+#SPEEDKETCHUP_INTERFACE=
+#SPEEDKETCHUP_SRC_ADDR=
+#SPEEDKETCHUP_DSCP=
+
+# yes runs the tests of different profiles at the same time
+#SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS=no
 ";
 
 pub fn settings_file() -> PathBuf {
@@ -164,11 +182,20 @@ pub fn retry_listen(state: Arc<Mutex<SpeedTestState>>) {
 
 fn reload_settings(state: &Arc<Mutex<SpeedTestState>>) {
     let config = app_config();
-    if let Ok(mut state) = state.lock() {
-	if config == state.config {
-	    return;
-	}
-	state.config = config;
+    let old_count = match state.lock() {
+	Ok(mut state) => {
+	    if config == state.config {
+		return;
+	    }
+	    let old_count = state.profiles.len();
+	    state.config = config;
+	    sync_profile_states(&mut state);
+	    old_count
+	},
+	Err(_) => return,
+    };
+    restore_last_tests(state, old_count);
+    if let Ok(state) = state.lock() {
 	// the test loop waits for the new interval
 	let _ = state.to_main_sender.send(());
     }
@@ -211,34 +238,53 @@ fn speeds_line(download: Option<f32>, upload: Option<f32>, latency: Option<Durat
     line
 }
 
-pub fn status_lines(state: &Arc<Mutex<SpeedTestState>>) -> (String, String) {
-    let state = match state.lock() {
-	Ok(s) => s,
-	Err(_) => return (String::new(), String::new()),
-    };
-    if state.status.starts_with("test") || state.status == "get provider info" {
-	let phase = match state.status.as_str() {
+fn profile_lines(p: &ProfileState) -> (String, String) {
+    if p.status.starts_with("test") || p.status == "get provider info" {
+	let phase = match p.status.as_str() {
 	    "test latency" => "Testing latency…",
 	    "test download" => "Testing download…",
 	    "test wait" | "test upload" => "Testing upload…",
 	    _ => "Finding a server…",
 	};
-	let line = speeds_line(state.gauge_download_mbps, state.gauge_upload_mbps, state.gauge_latency);
+	let line = speeds_line(p.gauge_download_mbps, p.gauge_upload_mbps, p.gauge_latency);
 	return (if line.len() > 0 { line } else { "Testing…".to_string() }, phase.to_string());
     }
-    let result = match &state.last_result {
+    let result = match &p.last_result {
 	None => "No results yet".to_string(),
 	Some(r) => speeds_line(r.download, r.upload, r.latency_idle),
     };
+    if p.status == "queued" {
+	return (result, "Waiting for another test".to_string());
+    }
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-    let mut when = match (state.last_test_time, &state.last_error) {
+    let mut when = match (p.last_test_time, &p.last_error) {
 	(None, _) => String::new(),
 	(Some(t), None) => format!("Last test {}", ago(now.saturating_sub(t))),
 	(Some(t), Some(e)) => format!("Last test failed {}: {e}", ago(now.saturating_sub(t))),
     };
-    if let Some(until) = state.idle_until {
+    if let Some(until) = p.idle_until {
 	let secs = until.saturating_duration_since(Instant::now()).as_secs();
 	when += &format!("{}next in {:02}:{:02}", if when.len() > 0 { ", " } else { "Next test " }, secs / 60, secs % 60);
     }
     (result, when)
+}
+
+// the lines of the menu: the result and the time of a lone profile, or a line
+// for every profile, at most MAX_PROFILES
+pub fn status_lines(state: &Arc<Mutex<SpeedTestState>>) -> Vec<String> {
+    let state = match state.lock() {
+	Ok(s) => s,
+	Err(_) => return vec!(),
+    };
+    if let [p] = state.profiles.as_slice() {
+	let (result, when) = profile_lines(p);
+	return vec![result, when];
+    }
+    state.profiles.iter().zip(state.config.profiles.iter()).map(|(p, cfg)| {
+	let (result, when) = profile_lines(p);
+	match when.len() {
+	    0 => format!("{}: {result}", cfg.name),
+	    _ => format!("{}: {result}  ·  {when}", cfg.name),
+	}
+    }).collect()
 }

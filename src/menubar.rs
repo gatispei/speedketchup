@@ -52,8 +52,8 @@ const LABEL: &str = "com.speedketchup.SpeedKetchup";
 struct Menu {
     state: Arc<Mutex<SpeedTestState>>,
     // NSMenuItem pointers, AppKit only touches them on the main thread
-    result_item: usize,
-    time_item: usize,
+    // as many as there can be lines, the ones not needed are hidden
+    status_items: Vec<usize>,
     error_item: usize,
     dashboard_item: usize,
     login_item: usize,
@@ -292,7 +292,7 @@ extern "C" fn should_handle_reopen(this: Id, cmd: Sel, app: Id, _has_visible_win
 
 extern "C" fn run_test(_this: Id, _cmd: Sel, _sender: Id) {
     if let Some(m) = MENU.get() {
-	request_test(&m.state);
+	request_test(&m.state, None);
     }
 }
 
@@ -382,10 +382,13 @@ extern "C" fn menu_needs_update(_this: Id, _cmd: Sel, _menu: Id) {
 	Some(m) => m,
 	None => return,
     };
-    let (result, when) = status_lines(&m.state);
+    let lines = status_lines(&m.state);
     unsafe {
-	set_title(m.result_item as Id, &result);
-	set_title(m.time_item as Id, &when);
+	for (i, item) in m.status_items.iter().enumerate() {
+	    let line = lines.get(i);
+	    set_title(*item as Id, line.map(|l| l.as_str()).unwrap_or(""));
+	    msg![(); *item as Id, "setHidden:", line.is_none() => bool];
+	}
 	let error = error_line();
 	let font = msg![Id; objc_getClass(cs!("NSFont")), "menuFontOfSize:", 0.0 => f64];
 	set_styled_title(m.error_item as Id, error.as_deref().unwrap_or(""), font, msg![Id; objc_getClass(cs!("NSColor")), "systemRedColor"]);
@@ -437,8 +440,7 @@ pub fn run(state: Arc<Mutex<SpeedTestState>>) -> ! {
 	msg![(); menu, "setDelegate:", target => Id];
 	add_header(menu, target);
 	add_separator(menu);
-	let result_item = add_item(menu, "", None, target, "");
-	let time_item = add_item(menu, "", None, target, "");
+	let status_items = (0..MAX_PROFILES).map(|_| add_item(menu, "", None, target, "") as usize).collect();
 	let error_item = add_item(menu, "", None, target, "");
 	add_separator(menu);
 	let dashboard_item = add_item(menu, "Open Dashboard", sel(cs!("openDashboard:")), target, "o");
@@ -453,8 +455,7 @@ pub fn run(state: Arc<Mutex<SpeedTestState>>) -> ! {
 
 	let _ = MENU.set(Menu {
 	    state: state,
-	    result_item: result_item as usize,
-	    time_item: time_item as usize,
+	    status_items: status_items,
 	    error_item: error_item as usize,
 	    dashboard_item: dashboard_item as usize,
 	    login_item: login_item as usize,

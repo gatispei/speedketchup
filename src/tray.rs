@@ -227,14 +227,14 @@ const OPEN_EXISTING: u32 = 3;
 const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
 
 const ID_HEADER: usize = 1;
-const ID_RESULT: usize = 2;
-const ID_TIME: usize = 3;
 const ID_ERROR: usize = 4;
 const ID_DASHBOARD: usize = 10;
 const ID_TEST: usize = 11;
 const ID_LOGIN: usize = 12;
 const ID_SETTINGS: usize = 13;
 const ID_QUIT: usize = 14;
+// a line of the status each, from this one on
+const ID_STATUS: usize = 100;
 
 const CLASS: &str = "SpeedKetchupTray";
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -583,10 +583,10 @@ fn tooltip() -> String {
 	Some(t) => t,
 	None => return String::new(),
     };
-    let (result, when) = status_lines(&tray.state);
-    let mut tip = format!("SpeedKetchup\n{result}\n{when}");
+    let lines = status_lines(&tray.state);
+    let mut tip = format!("SpeedKetchup\n{}", lines.join("\n"));
     if let Some(error) = error_line() {
-	tip = format!("SpeedKetchup\n{error}\n{result}");
+	tip = format!("SpeedKetchup\n{error}\n{}", lines.first().map(|l| l.as_str()).unwrap_or(""));
     }
     tip
 }
@@ -633,10 +633,11 @@ fn update(hwnd: Handle, menu: Handle) {
     if menu.is_null() {
 	return;
     }
-    let (result, when) = status_lines(&tray.state);
+    let lines = status_lines(&tray.state);
     unsafe {
-	for (id, text) in [(ID_RESULT, result), (ID_TIME, when)] {
-	    let mut text = wide(&text);
+	for (i, text) in lines.iter().enumerate() {
+	    let id = ID_STATUS + i;
+	    let mut text = wide(text);
 	    let mut info: MenuItemInfo = std::mem::zeroed();
 	    info.size = std::mem::size_of::<MenuItemInfo>() as u32;
 	    info.mask = MIIM_STRING;
@@ -656,7 +657,7 @@ fn show_menu(hwnd: Handle, x: i32, y: i32) {
 	Some(t) => t,
 	None => return,
     };
-    let (result, when) = status_lines(&tray.state);
+    let lines = status_lines(&tray.state);
     let error = error_line();
     let listening = listening(&tray.state);
     unsafe {
@@ -666,8 +667,9 @@ fn show_menu(hwnd: Handle, x: i32, y: i32) {
 	add(MF_STRING | MF_GRAYED, ID_HEADER, "SpeedKetchup");
 	SetMenuDefaultItem(menu, ID_HEADER as u32, 0);
 	AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-	add(MF_STRING | MF_GRAYED, ID_RESULT, &result);
-	add(MF_STRING | MF_GRAYED, ID_TIME, &when);
+	for (i, line) in lines.iter().enumerate() {
+	    add(MF_STRING | MF_GRAYED, ID_STATUS + i, line);
+	}
 	if let Some(error) = &error {
 	    // enabled, as a disabled item's bitmap is grayed
 	    add(MF_STRING, ID_ERROR, error);
@@ -727,7 +729,7 @@ extern "system" fn wndproc(hwnd: Handle, msg: u32, wparam: usize, lparam: isize)
 	WM_COMMAND => {
 	    match wparam & 0xffff {
 		ID_DASHBOARD => open_dashboard(),
-		ID_TEST => if let Some(t) = tray { request_test(&t.state) },
+		ID_TEST => if let Some(t) = tray { request_test(&t.state, None) },
 		ID_LOGIN => set_login(!login_enabled()),
 		ID_SETTINGS | ID_ERROR => edit_settings(),
 		ID_QUIT => {

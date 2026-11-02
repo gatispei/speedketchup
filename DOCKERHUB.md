@@ -47,6 +47,17 @@ Defaults are the values the container image ships with.
 |`SPEEDKETCHUP_MQTT`||mqtt broker host[:port] to also publish every result to, with Home Assistant discovery, plain mqtt only, port 1883 by default|
 |`SPEEDKETCHUP_MQTT_USER`||user name for the mqtt broker|
 |`SPEEDKETCHUP_MQTT_PASSWORD`||password for the mqtt broker|
+|`SPEEDKETCHUP_NAME`||name of the test profile|
+|`SPEEDKETCHUP_INTERFACE`||network interface to test over|
+|`SPEEDKETCHUP_SRC_ADDR`||source address to test from|
+|`SPEEDKETCHUP_DSCP`||dscp value 0-63 of the test traffic, for the router to pick a wan by|
+|`SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS`|`no`|run the tests of different profiles at the same time|
+
+Several test profiles, eg one for every wan of a dual-wan router, are given as
+comma separated values of the name, interval, server, duration, connections,
+interface, source address and dscp settings, one for every profile, an empty one
+is the default, a single value is for all of them, eg `SPEEDKETCHUP_NAME=wan1,wan2`
+and `SPEEDKETCHUP_DSCP=10,20`.
 
 <pre>
 docker run -p 8080:8080 -v speedketchup:/data -e SPEEDKETCHUP_INTERVAL=30 gatispei/speedketchup

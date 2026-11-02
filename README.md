@@ -65,6 +65,7 @@ Prebuilt executables for some platforms:
   - every result, or daily, monthly, time of day or time of week averages
   - legend with min/avg/max of the displayed results and the share of results in the hovered value range
   - sortable table of the results with every recorded detail, including errors
+- several test profiles, eg to test every wan of a dual-wan router, with their own schedules, gauges and series in the charts
 - [prometheus](https://prometheus.io) metrics of the last test at `/metrics`: download and upload speed, idle and loaded latency, server and isp, test and failure counts
 - all web assets are included in the program binary
 - linux process memory usage under 1 MB at all times
@@ -96,6 +97,12 @@ usage: speedketchup [options]
 		port: 1883 by default, plain mqtt only
 	-mu|--mqtt-user &ltuser&gt: user name for the mqtt broker
 	-mp|--mqtt-password &ltpassword&gt: password for the mqtt broker
+	-n|--name &ltname&gt: name of the test profile, shown on the web page
+	-if|--interface &ltinterface&gt: network interface to test over
+		windows: the Idx of 'netsh interface ipv4 show interfaces'
+	-sa|--src-addr &ltaddr&gt: source address to test from
+	-ds|--dscp &lt0-63&gt: dscp value of the test traffic, for the router to pick a wan by, not on windows
+	-ao|--allow-overlapping-tests &ltyes|no&gt: run the tests of different profiles at the same time, no by default
 
 every option can also be given as an environment variable, command line options
 take precedence:
@@ -104,7 +111,14 @@ take precedence:
 	SPEEDKETCHUP_UPLOAD_DURATION, SPEEDKETCHUP_DOWNLOAD_CONNECTIONS,
 	SPEEDKETCHUP_UPLOAD_CONNECTIONS, SPEEDKETCHUP_INFLUX_URL,
 	SPEEDKETCHUP_INFLUX_TOKEN, SPEEDKETCHUP_MQTT, SPEEDKETCHUP_MQTT_USER,
-	SPEEDKETCHUP_MQTT_PASSWORD
+	SPEEDKETCHUP_MQTT_PASSWORD, SPEEDKETCHUP_NAME, SPEEDKETCHUP_INTERFACE,
+	SPEEDKETCHUP_SRC_ADDR, SPEEDKETCHUP_DSCP, SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS
+
+several test profiles, eg one for every wan, are given as comma separated values
+of the name, interval, server, duration, connections, interface, src-addr and dscp
+options, one for every profile. An empty one is the default, a single value is
+for all the profiles:
+	speedketchup -n wan1,wan2 -sa 192.0.2.1,198.51.100.1 -i 10,30
 </pre>
 
 ### Metrics
@@ -113,6 +127,7 @@ take precedence:
 download and upload speed in bits per second, idle, download and upload latency
 in seconds, the server and isp as labels on `speedketchup_last_test_info`, and
 test and failure counts. Run with `-a 0.0.0.0` so the scraper can reach it.
+With several test profiles the series have a `profile` label with the name.
 
 <pre>
 scrape_configs:
@@ -146,7 +161,8 @@ speedketchup,server=LIVAS/Riga/Latvia,server_host=speedtest.livas.lv:8080,isp=Te
 
 The values are rounded like in the csv, fields of a disabled test are left out,
 and a failed test is a point with just an `error` string field. A write that
-fails is logged and not retried, the csv still has the result.
+fails is logged and not retried, the csv still has the result. With several test
+profiles the points have a `profile` tag with the name.
 
 The url is the complete write url, so the same option covers every server that
 takes line protocol over http. Put the token in `--influx-token` or
@@ -186,6 +202,11 @@ from the broker. The speed and latency sensors go unavailable when there was no
 successful test for two intervals. The sensors of a test disabled with `-dd 0`
 or `-ud 0` are removed. speedketchup connects for every result and disconnects
 when the broker has acknowledged it. Only plain mqtt is supported, no TLS.
+
+With several test profiles every profile is a device of its own, named after the
+profile. The first keeps the topics above, the others publish to
+`speedketchup/<number>/state` with `speedketchup_<number>` in their ids. The
+retained messages of a profile that was removed stay on the broker.
 
 ### macOS app
 

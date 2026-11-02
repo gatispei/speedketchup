@@ -15,7 +15,32 @@
           background-color: white;
           color: black;
       }
-      #dash_outline {
+      #dashboard {
+	  display: flex;
+	  flex-wrap: wrap;
+	  justify-content: center;
+      }
+      #dashboard svg {
+	  flex: none;
+      }
+      .gauge {
+	  display: flex;
+	  flex-direction: column;
+	  align-items: center;
+      }
+      .gauge_name {
+	  font-size: 16px;
+	  font-weight: bold;
+	  margin-top: 2px;
+	  cursor: pointer;
+      }
+      .gauge_name.dimmed {
+	  opacity: 0.4;
+      }
+      .gauge_name:empty {
+	  display: none;
+      }
+      .dash_outline {
 	  fill: #fff;
       }
       input[type="range"] {
@@ -136,7 +161,7 @@
               background-color: black;
               color: white;
 	  }
-	  #dash_outline {
+	  .dash_outline {
 	      fill: #000;
 	      stroke: #aaa;
 	  }
@@ -149,16 +174,16 @@
 	  #progress_band_bg {
 	      fill: #222;
 	  }
-	  #upload_progress_band {
+	  .upload_progress_band {
 	      fill: #444;
 	  }
-	  #download_progress_band {
+	  .download_progress_band {
 	      fill: #444;
 	  }
-	  #download_speed_band {
+	  .download_speed_band {
 	      fill: #700;
 	  }
-	  #upload_speed_band {
+	  .upload_speed_band {
 	      fill: #008;
 	  }
 	  .inactive_button_circle {
@@ -173,8 +198,7 @@
     </style>
   </head>
   <body style="margin: 0; padding: 0; font-family: verdana; font-size: 11px;">
-    <div id="dashboard" width="100%">
-      <svg viewBox="-105 0 410 100" xmlns="http://www.w3.org/2000/svg" height="150px" style="margin-left: 50%; transform: translateX(-50%);">
+    <svg width="0" height="0" style="position: absolute;" xmlns="http://www.w3.org/2000/svg">
 	<style>
 	  text, tspan {
 	      font-family: verdana;
@@ -230,6 +254,12 @@
 		/>
 	</defs>
 
+    </svg>
+    <div id="dashboard"></div>
+    <!-- a gauge for every profile, {p} tells apart their ids, {n} is the number of the profile -->
+    <template id="gauge_template">
+      <div class="gauge">
+      <svg viewBox="-105 0 410 100" xmlns="http://www.w3.org/2000/svg" height="150px">
 	<path d="M -55 101
 		 v -1
 		 a 50 50 0 0 0 50 -50
@@ -239,94 +269,96 @@
 		 a 50 50 0 0 0 50 50
 		 v 1
 		 z"
-	      id="dash_outline" filter="url(#f3)" transform="translate(0, 1)" />
+	      class="dash_outline" filter="url(#f3)" transform="translate(0, 1)" />
 
-	<clipPath id="clip_dpb">
-	  <path id="download_progress_band_clip_path" d=""/>
+	<clipPath id="{p}clip_dpb">
+	  <path id="{p}download_progress_band_clip_path" d=""/>
 	</clipPath>
-	<clipPath id="clip_upb">
-	  <path id="upload_progress_band_clip_path" d=""/>
+	<clipPath id="{p}clip_upb">
+	  <path id="{p}upload_progress_band_clip_path" d=""/>
 	</clipPath>
-	<clipPath id="clip_dsb">
-	  <path id="download_speed_band_clip_path" d=""/>
+	<clipPath id="{p}clip_dsb">
+	  <path id="{p}download_speed_band_clip_path" d=""/>
 	</clipPath>
-	<clipPath id="clip_usb">
-	  <path id="upload_speed_band_clip_path" d=""/>
+	<clipPath id="{p}clip_usb">
+	  <path id="{p}upload_speed_band_clip_path" d=""/>
 	</clipPath>
 
-	<path id="download_progress_band" d="M 45 50
+	<path class="download_progress_band" d="M 45 50
 		 m -28 28
 		 a 40 40 1 1 1 56 0
 		 l 2 2
 		 a 43 43 1 1 0 -60 0
 		 z"
-	      fill="#ccc" clip-path="url(#clip_dpb)"/>
-	<path id="upload_progress_band" d="M 155 50
+	      fill="#ccc" clip-path="url(#{p}clip_dpb)"/>
+	<path class="upload_progress_band" d="M 155 50
 		 m -28 28
 		 a 40 40 1 1 1 56 0
 		 l 2 2
 		 a 43 43 1 1 0 -60 0
 		 z"
-	      fill="#ccc" clip-path="url(#clip_upb)"/>
+	      fill="#ccc" clip-path="url(#{p}clip_upb)"/>
 
 	<use x="-5" y="0" href="#spd"/>
 	<use x="105" y="0" href="#spd"/>
-	<path id="download_speed_band" d="M 45 50
+	<path class="download_speed_band" d="M 45 50
 		     m -28 28
 		     a 40 40 1 1 1 56 0
 		     l -6 -6
 		     a 32 32 1 1 0 -44 0
 		     z"
-		  fill="#fdd" clip-path="url(#clip_dsb)"/>
-	<path id="upload_speed_band" d="M 155 50
+		  fill="#fdd" clip-path="url(#{p}clip_dsb)"/>
+	<path class="upload_speed_band" d="M 155 50
 		     m -28 28
 		     a 40 40 1 1 1 56 0
 		     l -6 -6
 		     a 32 32 1 1 0 -44 0
 		     z"
-		  fill="#ddf" clip-path="url(#clip_usb)"/>
+		  fill="#ddf" clip-path="url(#{p}clip_usb)"/>
 
-	<use id="download_needle" x="0" y="0" href="#needle" fill="#d00" transform="rotate(-135, 45, 50)" style="visibility: hidden;"/>
-	<use id="upload_needle" x="110" y="0" href="#needle" fill="#00d" transform="rotate(-135, 155, 50)" style="visibility: hidden;"/>
+	<use id="{p}download_needle" x="0" y="0" href="#needle" fill="#d00" transform="rotate(-135, 45, 50)" style="visibility: hidden;"/>
+	<use id="{p}upload_needle" x="110" y="0" href="#needle" fill="#00d" transform="rotate(-135, 155, 50)" style="visibility: hidden;"/>
 
 	<text text-anchor="middle" x="45" y="75" class="gt" fill="#d00" style="font-size: 15px; cursor: default;"><title>Download</title>▼</text>
-	<text text-anchor="middle" x="45" y="90" class="bt"><title>Download Speed Mbps</title><tspan id="download_mbps"></tspan></text>
+	<text text-anchor="middle" x="45" y="90" class="bt"><title>Download Speed Mbps</title><tspan id="{p}download_mbps"></tspan></text>
 	<text text-anchor="middle" x="70" y="90" class="st">Mbps</text>
-	<text text-anchor="middle" x="45" y="98" class="st"><title>Latency While Downloading</title><tspan id="download_latency"></tspan></text>
+	<text text-anchor="middle" x="45" y="98" class="st"><title>Latency While Downloading</title><tspan id="{p}download_latency"></tspan></text>
 
 	<text text-anchor="middle" x="155" y="75" class="gt" fill="#00d" style="font-size: 15px; cursor: default;"><title>Upload</title>▲</text>
-	<text text-anchor="middle" x="155" y="90" class="bt"><title>Upload Speed Mbps</title><tspan id="upload_mbps"></tspan></text>
+	<text text-anchor="middle" x="155" y="90" class="bt"><title>Upload Speed Mbps</title><tspan id="{p}upload_mbps"></tspan></text>
 	<text text-anchor="middle" x="180" y="90" class="st">Mbps</text>
-	<text text-anchor="middle" x="155" y="98" class="st"><title>Latency While Uploading</title><tspan id="upload_latency"></tspan></text>
+	<text text-anchor="middle" x="155" y="98" class="st"><title>Latency While Uploading</title><tspan id="{p}upload_latency"></tspan></text>
 
-	<g id="start_button" class="button" style="cursor: pointer; visibility: hidden;" onclick="onClickStart()">
+	<g id="{p}start_button" class="button" style="cursor: pointer; visibility: hidden;" onclick="onClickStart({n})">
 	  <title>Start Test Now</title>
 	  <circle cx="100" cy="21" r="14" fill="#0c0" />
 	  <path d="M 97 16 l 10 5 l -10 5 z" fill="#fff"/>
 	</g>
-	<g id="stop_button" style="visibility: hidden;">
+	<g id="{p}stop_button" style="visibility: hidden;">
 	  <title>Test Is Running</title>
 	  <circle cx="100" cy="21" r="14" fill="#ddd" class="inactive_button_circle"/>
 	  <path d="M 97 16 l 10 5 l -10 5 z" fill="#fff"/>
-<!-- 	<g id="stop_button" class="button" style="visibility: hidden;" onclick="onClickStop()"> -->
+<!-- 	<g id="{p}stop_button" class="button" style="visibility: hidden;" onclick="onClickStop()"> -->
 <!-- 	  <title>Stop Test</title> -->
 <!-- 	  <circle cx="100" cy="18" r="12" fill="#0c0" /> -->
 <!-- 	  <path d="M 96 14 h8 v8 h-8 z" fill="#fff"/> -->
 	</g>
-	<g id="disconnected_button" style="visibility: hidden;">
+	<g id="{p}disconnected_button" style="visibility: hidden;">
 	  <title>Connection Lost</title>
 	  <circle cx="100" cy="21" r="14" fill="#ddd" class="inactive_button_circle"/>
 	  <circle cx="100" cy="21" r="4" fill="#fff" />
 	</g>
-	<g id="disconnected2_button" style="visibility: hidden;">
+	<g id="{p}disconnected2_button" style="visibility: hidden;">
 	  <title>Connection Lost</title>
 	  <circle cx="100" cy="79" r="14" fill="#ddd" class="inactive_button_circle"/>
 	  <circle cx="100" cy="79" r="4" fill="#fff" />
 	</g>
-	<text text-anchor="middle" x="100" y="52" class="st"><title>Time Till Next Test</title><tspan id="time_till_next"></tspan></text>
-	<text text-anchor="middle" x="0" y="98" class="st"><title>Latency When Idle</title><tspan id="idle_latency"></tspan></text>
+	<text text-anchor="middle" x="100" y="52" class="st"><title>Time Till Next Test</title><tspan id="{p}time_till_next"></tspan></text>
+	<text text-anchor="middle" x="0" y="98" class="st"><title>Latency When Idle</title><tspan id="{p}idle_latency"></tspan></text>
       </svg>
-    </div>
+      <div id="{p}name" class="gauge_name" title="Show only this profile, click again for all" onclick="onClickName({n})"></div>
+      </div>
+    </template>
 
     <div id="average_selector">
       Show:
@@ -445,6 +477,22 @@ function degrees_to_clip_path(deg) {
     return ret;
 }
 
+// the gauges of the profile at index i
+function gauge_el(i, id) {
+    return el("p" + i + "_" + id);
+}
+var gauge_count = 0;
+function build_gauges(profiles) {
+    let html = el("gauge_template").innerHTML;
+    gauge_count = profiles.length;
+    profiles.forEach((p, i) => {
+	el("dashboard").insertAdjacentHTML("beforeend", html.replaceAll("{p}", "p" + i + "_").replaceAll("{n}", i + 1));
+	if (profiles.length > 1) {
+	    gauge_el(i, "name").textContent = p.name;
+	}
+    });
+}
+
 function request(obj, cb) {
 //    debug("request");
     var req = new XMLHttpRequest();
@@ -465,51 +513,61 @@ function request(obj, cb) {
 }
 
 var stateStr = "";
+function profile_names_of(state) {
+    return JSON.stringify(state.profiles.map(p => p.name));
+}
+var profile_names = profile_names_of(stateObj);
 function dashboard_set() {
-    if (!stateObj || !stateObj.state) {
-	el("start_button").style.visibility = "hidden";
-	el("stop_button").style.visibility = "hidden";
-	el("disconnected_button").style.visibility = "visible";
-	el("disconnected2_button").style.visibility = "visible";
+    for (let i = 0; i < gauge_count; i++) {
+	gauge_set(i, stateObj && stateObj.state ? stateObj.profiles[i] : null);
+    }
+}
+
+function gauge_set(i, p) {
+    if (!p) {
+	gauge_el(i, "start_button").style.visibility = "hidden";
+	gauge_el(i, "stop_button").style.visibility = "hidden";
+	gauge_el(i, "disconnected_button").style.visibility = "visible";
+	gauge_el(i, "disconnected2_button").style.visibility = "visible";
 	return;
     }
-    el("disconnected_button").style.visibility = "hidden";
-    el("disconnected2_button").style.visibility = "hidden";
-    if (stateObj.state == "idle") {
-	el("start_button").style.visibility = "visible";
-	el("stop_button").style.visibility = "hidden";
+    gauge_el(i, "disconnected_button").style.visibility = "hidden";
+    gauge_el(i, "disconnected2_button").style.visibility = "hidden";
+    if (p.state == "idle") {
+	gauge_el(i, "start_button").style.visibility = "visible";
+	gauge_el(i, "stop_button").style.visibility = "hidden";
     }
     else {
-	el("start_button").style.visibility = "hidden";
-	el("stop_button").style.visibility = "visible";
+	gauge_el(i, "start_button").style.visibility = "hidden";
+	gauge_el(i, "stop_button").style.visibility = "visible";
     }
     // anything missing from the state is shown as on a fresh page load, so
     // the gauges after a test look the same as after reloading the page
-    el("idle_latency").textContent = stateObj.latency ? format3(stateObj.latency, "ms") : "";
-    set_speed_gauge("download", 45, stateObj.download_mbps);
-    set_progress_band("download", 45, stateObj.download_progress);
-    el("download_latency").textContent = stateObj.download_latency ? format3(stateObj.download_latency, "ms") : "";
-    set_speed_gauge("upload", 155, stateObj.upload_mbps);
-    set_progress_band("upload", 155, stateObj.upload_progress);
-    el("upload_latency").textContent = stateObj.upload_latency ? format3(stateObj.upload_latency, "ms") : "";
+    gauge_el(i, "idle_latency").textContent = p.latency ? format3(p.latency, "ms") : "";
+    set_speed_gauge(i, "download", 45, p.download_mbps);
+    set_progress_band(i, "download", 45, p.download_progress);
+    gauge_el(i, "download_latency").textContent = p.download_latency ? format3(p.download_latency, "ms") : "";
+    set_speed_gauge(i, "upload", 155, p.upload_mbps);
+    set_progress_band(i, "upload", 155, p.upload_progress);
+    gauge_el(i, "upload_latency").textContent = p.upload_latency ? format3(p.upload_latency, "ms") : "";
 }
 
-function set_speed_gauge(name, cx, mbps) {
+function set_speed_gauge(i, name, cx, mbps) {
     if (!mbps) {
-	el(name + "_mbps").textContent = "";
-	el(name + "_needle").style.visibility = "hidden";
-	el(name + "_speed_band_clip_path").setAttribute("d", "");
+	gauge_el(i, name + "_mbps").textContent = "";
+	gauge_el(i, name + "_needle").style.visibility = "hidden";
+	gauge_el(i, name + "_speed_band_clip_path").setAttribute("d", "");
 	return;
     }
-    el(name + "_mbps").textContent = format3(mbps);
+    gauge_el(i, name + "_mbps").textContent = format3(mbps);
     var deg = speed_to_gauge_degrees(mbps);
-    el(name + "_needle").transform.baseVal[0].setRotate(-135 + deg, cx, 50);
-    el(name + "_needle").style.visibility = "visible";
-    el(name + "_speed_band_clip_path").setAttribute("d", "M" + cx + " 50" + degrees_to_clip_path(deg));
+    gauge_el(i, name + "_needle").transform.baseVal[0].setRotate(-135 + deg, cx, 50);
+    gauge_el(i, name + "_needle").style.visibility = "visible";
+    gauge_el(i, name + "_speed_band_clip_path").setAttribute("d", "M" + cx + " 50" + degrees_to_clip_path(deg));
 }
 
-function set_progress_band(name, cx, progress) {
-    el(name + "_progress_band_clip_path").setAttribute("d", progress ? "M" + cx + " 50" + degrees_to_clip_path(progress * 270 / 100) : "");
+function set_progress_band(i, name, cx, progress) {
+    gauge_el(i, name + "_progress_band_clip_path").setAttribute("d", progress ? "M" + cx + " 50" + degrees_to_clip_path(progress * 270 / 100) : "");
 }
 
 function onRequest(r) {
@@ -527,29 +585,34 @@ function onRequest(r) {
     if (stateObj.state != stateNew.state)  {
 	debug("old:" + stateObj.state + " new:" + stateNew.state);
     }
-    if (stateObj.state && stateObj.state != "idle" && stateNew.state == "idle") {
+    // the settings changed the profiles, the gauges and charts are made for them
+    if (profile_names_of(stateNew) != profile_names) {
+	window.location.reload();
+	return;
+    }
+    if ((stateObj.profiles || []).some((p, i) => p.state != "idle" && stateNew.profiles[i].state == "idle")) {
 	// a test finished, show its result
 	debug("refresh on idle");
 	refreshResults();
     }
     stateOld = stateObj;
     stateObj = stateNew;
-    if (stateObj.idle_time) {
-	updateIdleTime();
-    }
-    else {
-	cleanupIdleTime();
-    }
+    updateIdleTime();
     dashboard_set();
     setTimeout(function () { request(stateStr, onRequest); }, 100);
 };
 
 // the results come as rows, the time in seconds and the rest of the line of
 // the results file, the charts take them as columns: time, idle, download and
-// upload latency, download and upload speed. data_info has the text columns,
-// client ip, isp, server description, server host and error, of every result
-var data = [[], [], [], [], [], []];
+// upload latency, download and upload speed, and the number of the profile,
+// counting from 1. data_info has the text columns, client ip, isp, server
+// description, server host and error, of every result
+var data = [[], [], [], [], [], [], []];
 var data_info = [];
+// the highest profile number of the results, and how many the charts show
+const max_profiles = 16;
+var data_max_profile = 1;
+var chart_profiles = 1;
 // a lone result is there twice, a second apart, a chart needs two points
 var data_padded = false;
 
@@ -602,10 +665,14 @@ function addRows(rows) {
 	    info.push(f[k] ?? "");
 	}
 	data_info.push(info);
+	// results from before there were profiles are of the first one
+	let profile = parseInt(f[11]);
+	data[6].push(profile >= 1 && profile <= max_profiles ? profile : 1);
+	data_max_profile = Math.max(data_max_profile, data[6][data[6].length - 1]);
     }
     if (data[0].length == 1) {
 	data[0].push(data[0][0] + 1);
-	for (let k = 1; k < 6; k++) {
+	for (let k = 1; k < 7; k++) {
 	    data[k].push(data[k][0]);
 	}
 	data_padded = true;
@@ -636,6 +703,9 @@ function refreshResults() {
 	    }
 	    addRows(j.rows);
 	    data_end = j.end;
+	    if (data_max_profile > chart_profiles) {
+		throw new Error("results of a new profile");
+	    }
 	    refreshData(data, data_info);
 	})
 	.catch(e => {
@@ -644,6 +714,7 @@ function refreshResults() {
 	});
 }
 var refreshData = null;
+var onClickName = null;
 
 var idleTimer = null;
 function updateIdleTime() {
@@ -652,29 +723,33 @@ function updateIdleTime() {
 	clearTimeout(idleTimer);
     }
     idleTimer = null;
-    var el = document.getElementById("time_till_next");
-    var it = stateObj.idle_time;
-    if (!it || it < 0) {
-	cleanupIdleTime();
-	return;
+    let counting = false;
+    for (let i = 0; i < gauge_count; i++) {
+	let it = stateObj.profiles?.[i]?.idle_time;
+	if (!it || it < 0) {
+	    gauge_el(i, "time_till_next").textContent = "";
+	    continue;
+	}
+	gauge_el(i, "time_till_next").textContent = formatNumber(Math.floor(it / 60), 2) + ":" + formatNumber(it % 60, 2);
+	counting = true;
     }
-    el.textContent = formatNumber(Math.floor(it / 60), 2) + ":" + formatNumber(it % 60, 2);
-    idleTimer = setTimeout(function() { stateObj.idle_time -= 1; updateIdleTime(); }, 1000);
+    if (counting) {
+	idleTimer = setTimeout(function() {
+	    for (let p of stateObj.profiles || []) {
+		if (p.idle_time) {
+		    p.idle_time -= 1;
+		}
+	    }
+	    updateIdleTime();
+	}, 1000);
+    }
 }
 
-function cleanupIdleTime() {
-    var el = document.getElementById("time_till_next");
-    el.textContent = "";
-    if (idleTimer) {
-	clearTimeout(idleTimer);
-    }
-}
-
-function onClickStart() {
+function onClickStart(profile) {
     debug("start");
     var req = new XMLHttpRequest();
     req.timeout = 10 * 1000;
-    req.open("POST", "start", true);
+    req.open("POST", "start?profile=" + profile, true);
     req.send();
 }
 
@@ -697,7 +772,34 @@ function initSpeedKetchup() {
     if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
 	dark = true;
     }
+    build_gauges(stateObj.profiles);
     dashboard_set();
+    updateIdleTime();
+
+    // the charts show series for every profile, and of the ones only the
+    // results still have
+    chart_profiles = Math.max(stateObj.profiles.length, data_max_profile);
+    const several = chart_profiles > 1;
+    function profile_name(number) {
+	return stateObj.profiles?.[number - 1]?.name ?? "Profile " + number;
+    }
+    // the results have one profile's value in a row, in the rows of the other
+    // profiles a series is undefined, uplot connects over that, a null is a
+    // failed test and leaves a gap
+    function nearest_idx(col, idx) {
+	if (idx == null || col[idx] !== undefined) {
+	    return idx;
+	}
+	for (let off = 1; off < col.length; off++) {
+	    if (col[idx - off] !== undefined) {
+		return idx - off;
+	    }
+	    if (col[idx + off] !== undefined) {
+		return idx + off;
+	    }
+	}
+	return idx;
+    }
 
     let mooSync = uPlot.sync("moo");
     const matchSyncKeys = (own, ext) => own == ext;
@@ -710,6 +812,7 @@ function initSpeedKetchup() {
 	    match: [matchSyncKeys, matchSyncKeys],
 	},
 	y: false,
+	dataIdx: (u, sidx, idx) => nearest_idx(u.data[sidx], idx),
     };
 
     let axis = [
@@ -835,10 +938,10 @@ function initSpeedKetchup() {
 	if (idx == null) {
 	    idx = data[0].length - 1;
 	}
-	let x = data[0][idx];
+	let x = data[0][nearest_idx(data[series_idx], idx)];
 	// the numbers of a column are padded to the same decimals over all the
 	// series, so that their decimal points line up
-	let numbers = s => [data[s][idx], aggs[s].min, aggs[s].avg, aggs[s].max].map(v => format3(v));
+	let numbers = s => [data[s][nearest_idx(data[s], idx)], aggs[s].min, aggs[s].avg, aggs[s].max].map(v => format3(v));
 	let all = [];
 	for (let s = 1; s < data.length; s++) {
 	    all.push(numbers(s));
@@ -1217,8 +1320,49 @@ function initSpeedKetchup() {
     let d2 = [];
     // the raw results in the same series order as the charts, the y axis
     // range and the distributions are always computed from these
-    let rd = [data[0], data[4], data[5]];
-    let rd2 = [data[0], data[2], data[3], data[1]];
+    let rd = [];
+    let rd2 = [];
+    // the results as columns per profile, the five value columns of each in a row
+    function profile_columns() {
+	if (!several) {
+	    return data.slice(0, 6);
+	}
+	let ret = [data[0]];
+	for (let p = 1; p <= chart_profiles; p++) {
+	    for (let k = 1; k < 6; k++) {
+		let col = data[k].map((v, i) => data[6][i] == p ? v : undefined);
+		// the other profiles' rows between failed tests are in the gap too
+		let after_failed = false;
+		let gap_start = -1;
+		for (let i = 0; i < col.length; i++) {
+		    if (col[i] === null) {
+			if (after_failed) {
+			    col.fill(null, gap_start, i);
+			}
+			after_failed = true;
+			gap_start = i + 1;
+		    }
+		    else if (col[i] !== undefined) {
+			after_failed = false;
+		    }
+		}
+		ret.push(col);
+	    }
+	}
+	return ret;
+    }
+    // into the charts' series order from a[0] and the columns of every profile
+    function set_series(speed, latency, a) {
+	speed[0] = latency[0] = a[0];
+	for (let p = 0; p < chart_profiles; p++) {
+	    let col = k => a[p * 5 + k];
+	    speed[1 + p * 2] = col(4);
+	    speed[2 + p * 2] = col(5);
+	    latency[1 + p * 3] = col(2);
+	    latency[2 + p * 3] = col(3);
+	    latency[3 + p * 3] = col(1);
+	}
+    }
     // an averaged point stands for the results until the next day or month,
     // so the raw results of the last visible point reach until then
     function raw_x_end(maxx) {
@@ -1242,15 +1386,15 @@ function initSpeedKetchup() {
     }
     function set_chart_data(mode) {
 	raw_profile_x = profile_span() ? data[0].map(ts => profile_x(ts, mode)) : [];
-	let src = data;
+	let columns = profile_columns();
+	set_series(rd, rd2, columns);
+	let src = columns;
 	if (profile_span() && time_interval) {
 	    // the time of day and week averages only cover the picked interval
 	    let idxs = data[0].map((ts, i) => i).filter(i => in_time_interval(data[0][i]));
-	    src = data.map(series => idxs.map(i => series[i]));
+	    src = columns.map(series => idxs.map(i => series[i]));
 	}
-	let a = get_averaged_data(src, mode);
-	[d[0], d[1], d[2]] = [a[0], a[4], a[5]];
-	[d2[0], d2[1], d2[2], d2[3]] = [a[0], a[2], a[3], a[1]];
+	set_series(d, d2, get_averaged_data(src, mode));
     }
     // the table of the results in the picked time interval, at most
     // table_max_rows of them, sorted by any column
@@ -1269,6 +1413,9 @@ function initSpeedKetchup() {
 	{ name: "Server Host", get: i => info[i]?.[3] },
 	{ name: "Error", get: i => info[i]?.[4] },
     ];
+    if (several) {
+	table_cols.splice(1, 0, { name: "Profile", get: i => profile_name(data[6][i]) });
+    }
     // newest first by default, a click on a header sorts by that column, a
     // second click reverses the order
     let table_sort = { col: 0, desc: true };
@@ -1293,7 +1440,7 @@ function initSpeedKetchup() {
 	let cnt = info.length || data[0].length;
 	let rows = [];
 	for (let i = 0; i < cnt; i++) {
-	    if (in_time_interval(data[0][i])) {
+	    if (result_shown(data[0][i], i)) {
 		rows.push(i);
 	    }
 	}
@@ -1351,6 +1498,11 @@ function initSpeedKetchup() {
     function in_time_interval(ts) {
 	return time_interval == null || (ts >= time_interval[0] && ts <= time_interval[1]);
     }
+    // the number of the only profile to show, null for all of them
+    let only_profile = null;
+    function result_shown(ts, i) {
+	return in_time_interval(ts) && (only_profile == null || data[6][i] == only_profile);
+    }
     // the x range the charts were last set to when the mode changed, it
     // doesn't change the picked interval
     let restored_x = null;
@@ -1371,11 +1523,11 @@ function initSpeedKetchup() {
     }
     let interval_fmt = uPlot.fmtDate("{YYYY}-{MMM}-{D} {H}:{mm}");
     function show_time_interval() {
-	let cnt = data[0].filter(in_time_interval).length;
+	let cnt = data[0].filter(result_shown).length;
 	let text = cnt + " results";
 	if (cnt > 0) {
-	    let first = data[0].find(in_time_interval);
-	    let last = data[0].findLast(in_time_interval);
+	    let first = data[0].find(result_shown);
+	    let last = data[0].findLast(result_shown);
 	    text = interval_fmt(new Date(first * 1e3)) + " \u2013 " + interval_fmt(new Date(last * 1e3)) + ", " + text;
 	}
 	el("time_interval_text").textContent = (time_interval ? "" : "All: ") + text;
@@ -1410,6 +1562,38 @@ function initSpeedKetchup() {
 	aggregates2.push({ min: null, max: null, avg: null });
     }
 
+    // the first profile is filled as a lone one is, the others are see through
+    // over it, with a color each for download, upload and idle. There are more
+    // profiles than clearly different colors, the rest are gray
+    const profile_colors = [
+	["#c98500", "#00968f", "#7a52c7"],
+	["#c2358a", "#2f8fd0", "#5f8f1a"],
+	["#9a57c9", "#d0603a", "#1f9fb0"],
+    ];
+    function profile_series(p, slot, label, fill, values) {
+	let series = {
+	    label: several ? profile_name(p + 1) + " " + label : label,
+	    ...seriesOpts,
+	    values: values,
+	};
+	if (p == 0) {
+	    series.fill = fill;
+	}
+	else {
+	    series.fill = (profile_colors[p - 1]?.[slot] ?? "#888888") + "66";
+	}
+	return series;
+    }
+    function all_profiles(series) {
+	let ret = [{}];
+	for (let p = 0; p < chart_profiles; p++) {
+	    ret.push(...series(p));
+	}
+	return ret;
+    }
+    let speed_values = (u, sidx, idx) => get_values_for_legend(d, aggregates, sidx, idx, u, dist1);
+    let latency_values = (u, sidx, idx) => get_values_for_legend(d2, aggregates2, sidx, idx, u, dist2);
+
     let opts = {
 	title: "Speed (Bandwidth)",
 	...getSize(),
@@ -1443,21 +1627,10 @@ function initSpeedKetchup() {
 	    },
 	},
 
-	series: [
-	    {},
-	    {
-		label: "Download (Mbps)",
-		fill: "rgba(255, 0, 0, 0.7)",
-		...seriesOpts,
-		values: (u, sidx, idx) => { return get_values_for_legend(d, aggregates, sidx, idx, u, dist1); }
-	    },
-	    {
-		label: "Upload (Mbps)",
-		fill: "rgba(0, 0, 255, 0.7)",
-		...seriesOpts,
-		values: (u, sidx, idx) => { return get_values_for_legend(d, aggregates, sidx, idx, u, dist1); }
-	    }
-	],
+	series: all_profiles(p => [
+	    profile_series(p, 0, "Download (Mbps)", "rgba(255, 0, 0, 0.7)", speed_values),
+	    profile_series(p, 1, "Upload (Mbps)", "rgba(0, 0, 255, 0.7)", speed_values),
+	]),
 	axes: axis,
 	hooks: dist_hooks(() => dist1, rd),
     };
@@ -1481,27 +1654,11 @@ function initSpeedKetchup() {
 		range: (u, min, max) => y_range(u, min, max, rd2, latency_max_drop)
 	    },
 	},
-	series: [
-	    {},
-	    {
-		label: "Latency While Downloading (ms)",
-		fill: "rgba(255, 0, 0, 0.5)",
-		...seriesOpts,
-		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx, u, dist2); }
-	    },
-	    {
-		label: "Latency While Uploading (ms)",
-		fill: "rgba(0, 0, 255, 0.5)",
-		...seriesOpts,
-		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx, u, dist2); }
-	    },
-	    {
-		label: "Latency When Idle (ms)",
-		fill: "rgba(50, 150, 50, 1)",
-		...seriesOpts,
-		values: (u, sidx, idx) => { return get_values_for_legend(d2, aggregates2, sidx, idx, u, dist2); }
-	    },
-	],
+	series: all_profiles(p => [
+	    profile_series(p, 0, "Latency While Downloading (ms)", "rgba(255, 0, 0, 0.5)", latency_values),
+	    profile_series(p, 1, "Latency While Uploading (ms)", "rgba(0, 0, 255, 0.5)", latency_values),
+	    profile_series(p, 2, "Latency When Idle (ms)", "rgba(50, 150, 50, 1)", latency_values),
+	]),
 	axes: axis,
 	hooks: dist_hooks(() => dist2, rd2),
     };
@@ -1530,8 +1687,6 @@ function initSpeedKetchup() {
 	for (let k = 0; k < data.length; k++) {
 	    data[k] = new_data[k];
 	}
-	[rd[0], rd[1], rd[2]] = [data[0], data[4], data[5]];
-	[rd2[0], rd2[1], rd2[2], rd2[3]] = [data[0], data[2], data[3], data[1]];
 	info = new_info;
 	no_data = data[0].length == 0;
 	set_chart_data(average_mode);
@@ -1573,6 +1728,24 @@ function initSpeedKetchup() {
 	}
 	show_time_interval();
     }
+
+    // a click on a profile's name shows only its series and results, a second
+    // click shows all of them
+    onClickName = function(profile) {
+	only_profile = only_profile == profile ? null : profile;
+	for (let [chart, per_profile] of [[chart1, 2], [chart2, 3]]) {
+	    chart.batch(() => {
+		for (let s = 1; s < chart.series.length; s++) {
+		    let number = Math.floor((s - 1) / per_profile) + 1;
+		    chart.setSeries(s, { show: only_profile == null || number == only_profile });
+		}
+	    });
+	}
+	for (let i = 0; i < gauge_count; i++) {
+	    gauge_el(i, "name").classList.toggle("dimmed", only_profile != null && i + 1 != only_profile);
+	}
+	show_time_interval();
+    };
 
     window.addEventListener("resize", e => {
 	chart1.setSize(getSize());
