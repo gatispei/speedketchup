@@ -534,6 +534,12 @@ fn parse_timestr(str: &str) -> Result<u32, ErrorString> {
     Ok(x)
 }
 
+// a thread working for this one, in the log with its name first
+fn sub_thread(name: std::fmt::Arguments) -> std::thread::Builder {
+    let c = std::thread::current();
+    std::thread::Builder::new().name(format!("{} {name}", c.name().unwrap_or("")))
+}
+
 macro_rules! pr {
     ($($arg:tt)*) => {{
 	let c = std::thread::current();
@@ -635,7 +641,7 @@ fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>, net: &NetOpts) ->
     let threads: Vec<_> = servers.iter().filter_map(|server| {
 	let host = server.host.clone();
 	let net = net.clone();
-	Some(std::thread::Builder::new().name(format!("test latency {}", server.host)).spawn(move || -> Result<(String, Option<Duration>), ErrorString> {
+	Some(sub_thread(format_args!("latency {}", server.host)).spawn(move || -> Result<(String, Option<Duration>), ErrorString> {
 	    let host = server_http_host(&host, &net);
 	    let latency = url_get_latency(&host, &net, "/speedtest/latency.txt", 3,
 					  Duration::from_secs(3),
@@ -1400,7 +1406,7 @@ fn test_download(host_str: &str, net: &NetOpts, duration: Duration, sizes: &Vec<
 		    bytes += buf.len();
 		    true
 		}), None::<fn(usize)>) {
-		    Err(err) => pr!("downlaod {path}: {err}"),
+		    Err(err) => pr!("download {path}: {err}"),
 		    Ok(_) => ()
 		}
 	    }
@@ -1459,7 +1465,7 @@ where
     let lat_progress = Arc::new(Mutex::new(Option::None));
     let pr = lat_progress.clone();
     let lat_net = net.clone();
-    let latency_thread = std::thread::Builder::new().name(format!("test latency {}", h)).spawn(move || -> Result<Option<Duration>, ErrorString> {
+    let latency_thread = sub_thread(format_args!("latency {}", h)).spawn(move || -> Result<Option<Duration>, ErrorString> {
 	let start_delay = Duration::from_millis(500);
 	std::thread::sleep(start_delay);
 	url_get_latency(&h, &lat_net, "/speedtest/latency.txt", 10,
@@ -1482,7 +1488,7 @@ where
 	let net = net.clone();
 
 	let progress = progress.clone();
-	Some(std::thread::Builder::new().name(format!("test{i}")).spawn(move || -> usize {
+	Some(sub_thread(format_args!("{test_type}{i}")).spawn(move || -> usize {
 	    match func(&sh, &net, duration, &ds, &progress) {
 		Ok(bytes) => {
 //		    pr!("bytes:{bytes}");
@@ -2816,7 +2822,7 @@ const HELP: &str = "usage: speedketchup [options]
 	-dd|--download-duration <seconds>: how long to test download speed, 0 disables test, 10 seconds by default
 	-ud|--upload-duration <seconds>: how long to test upload speed, 0 disables test, 10 seconds by default
 	-dc|--download-connections <number>: how many parallel connections to make for download, 8 connections by default
-	-uc|--uplaod-connections <number>: how many parallel connections to make for upload, 8 connections by default
+	-uc|--upload-connections <number>: how many parallel connections to make for upload, 8 connections by default
 	-iu|--influx-url <url>: also write every result to this InfluxDB line protocol write url, http only
 		eg http://influxdb:8086/api/v2/write?org=home&bucket=speedketchup
 	-it|--influx-token <token>: token for the influx url, sent as 'Authorization: Token <token>'
@@ -3390,7 +3396,11 @@ fn start_queued_tests(arc: &Arc<Mutex<SpeedTestState>>, state: &mut SpeedTestSta
 	p.running = true;
 	state.running_tests += 1;
 	let test_state = arc.clone();
-	if let Err(e) = std::thread::Builder::new().name(format!("test {}", profile.name)).spawn(move || {
+	let name = match state.profiles.len() {
+	    1 => "test".to_string(),
+	    _ => format!("test {}", profile.name),
+	};
+	if let Err(e) = std::thread::Builder::new().name(name).spawn(move || {
 	    run_test(&test_state, idx, &profile);
 	}) {
 	    pr!("thread failed {e}");

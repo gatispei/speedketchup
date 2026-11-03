@@ -89,7 +89,7 @@ usage: speedketchup [options]
 	-dd|--download-duration &ltseconds&gt: how long to test download speed, 0 disables test, 10 seconds by default
 	-ud|--upload-duration &ltseconds&gt: how long to test upload speed, 0 disables test, 10 seconds by default
 	-dc|--download-connections &ltnumber&gt: how many parallel connections to make for download, 8 connections by default
-	-uc|--uplaod-connections &ltnumber&gt: how many parallel connections to make for upload, 8 connections by default
+	-uc|--upload-connections &ltnumber&gt: how many parallel connections to make for upload, 8 connections by default
 	-iu|--influx-url &lturl&gt: also write every result to this InfluxDB line protocol write url, http only
 		eg http://influxdb:8086/api/v2/write?org=home&bucket=speedketchup
 	-it|--influx-token &lttoken&gt: token for the influx url, sent as 'Authorization: Token &lttoken&gt'
