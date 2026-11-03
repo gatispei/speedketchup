@@ -128,6 +128,8 @@ const DEGREES_TO_KM: f32 = 40075.0 / 360.0;
 
 #[derive(Debug, Clone)]
 struct SpeedTestServer {
+    // where the test requests go, can differ from the host of the list
+    http_host: String,
     descr: String,
     host: String,
 //    url: String,
@@ -633,11 +635,13 @@ fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>, net: &NetOpts) ->
     let threads: Vec<_> = servers.iter().filter_map(|server| {
 	let host = server.host.clone();
 	let net = net.clone();
-	Some(std::thread::Builder::new().name(format!("test latency {}", server.host)).spawn(move || -> Result<Option<Duration>, ErrorString> {
-	    url_get_latency(&host, &net, "speedtest/latency.txt", 3,
-			    Duration::from_secs(3),
-			    Duration::from_millis(50),
-			    None::<fn(Duration)>)
+	Some(std::thread::Builder::new().name(format!("test latency {}", server.host)).spawn(move || -> Result<(String, Option<Duration>), ErrorString> {
+	    let host = server_http_host(&host, &net);
+	    let latency = url_get_latency(&host, &net, "/speedtest/latency.txt", 3,
+					  Duration::from_secs(3),
+					  Duration::from_millis(50),
+					  None::<fn(Duration)>)?;
+	    Ok((host, latency))
 	}).ok()?)
     }).collect();
     let mut latencies = vec![];
@@ -646,8 +650,9 @@ fn servers_sort_by_latency(servers: &mut Vec<SpeedTestServer>, net: &NetOpts) ->
 //	pr!("thread join {:?}", x);
 	latencies.push(x);
     }
-    for (i, lat) in latencies.iter().enumerate() {
-	servers[i].latency = *lat;
+    for (i, (host, lat)) in latencies.into_iter().enumerate() {
+	servers[i].http_host = host;
+	servers[i].latency = lat;
     }
 
     servers.sort_by(|a, b| a.latency.cmp(&b.latency));
@@ -1317,6 +1322,37 @@ fn url_host_and_path(url: &str) -> (&str, &str) {
     (&url[start_idx..end_idx], &url[end_idx..])
 }
 
+fn http_location(resp: &[u8]) -> Option<String> {
+    let mut loc = None;
+    http_headers(resp, |hdr_type, hdr_val| {
+	if hdr_type.to_ascii_lowercase() != b"location" {
+	    return
+	}
+	if let Ok(v) = std::str::from_utf8(hdr_val) {
+	    loc = Some(v.to_string());
+	}
+    });
+    loc
+}
+
+// where the test requests of a server go. Many send http requests to their https
+// name at ookla, that name also serves plain http
+fn server_http_host(host: &str, net: &NetOpts) -> String {
+    let location = http_get(host, net, "/speedtest/latency.txt").ok().and_then(|resp| {
+	match http_status_code(&resp) {
+	    Ok(301 | 302 | 303 | 307 | 308) => http_location(&resp),
+	    _ => None,
+	}
+    });
+    match location.as_deref().map(|l| url_host_and_path(l).0) {
+	Some(http_host) if !http_host.is_empty() => {
+	    pr!("{host} is at {http_host}");
+	    http_host.to_string()
+	},
+	_ => host.to_string(),
+    }
+}
+
 fn http_get_follow_redirects(host: &str, net: &NetOpts, path: &str) -> Result<Vec<u8>, ErrorString> {
     let mut h = host.to_string();
     let mut p = path.to_string();
@@ -1326,16 +1362,7 @@ fn http_get_follow_redirects(host: &str, net: &NetOpts, path: &str) -> Result<Ve
 	    301 | 302 | 303 | 307 | 308 => (),
 	    _ => return Ok(resp)
 	};
-	let mut loc = None;
-	http_headers(&resp, |hdr_type, hdr_val| {
-	    if hdr_type.to_ascii_lowercase() != b"location" {
-		return
-	    }
-	    if let Ok(v) = std::str::from_utf8(hdr_val) {
-		loc = Some(v.to_string());
-	    }
-	});
-	let loc = match loc {
+	let loc = match http_location(&resp) {
 	    None => return Ok(resp),
 	    Some(v) => v
 	};
@@ -1367,7 +1394,7 @@ fn test_download(host_str: &str, net: &NetOpts, duration: Duration, sizes: &Vec<
 	    Some(t) if t < Duration::from_millis(1) => break,
 	    Some(t) => {
 		let size = sizes[i];
-		let path = format!("speedtest/random{size}x{size}.jpg");
+		let path = format!("/speedtest/random{size}x{size}.jpg");
 		match http_request(host_str, net, &path, "GET", "Cache-Control: no-cache\r\n", "", t, 0, Some(|buf: &[u8]| {
 		    progress.fetch_add(buf.len(), Ordering::Relaxed);
 		    bytes += buf.len();
@@ -1397,7 +1424,7 @@ fn test_upload(host_str: &str, net: &NetOpts, duration: Duration, sizes: &Vec<u3
 	    Some(t) if t < Duration::from_millis(1) => break,
 	    Some(t) => {
 		let size = sizes[i];
-		let path = "speedtest/upload.php";
+		let path = "/speedtest/upload.php";
 		match http_request(host_str, net, &path, "POST", &format!("Content-Length: {size}\r\n"), "", t, size as usize, None::<fn(&[u8]) -> bool>, Some(|b: usize| {
 		    progress.fetch_add(b, Ordering::Relaxed);
 		    bytes += b;
@@ -1435,7 +1462,7 @@ where
     let latency_thread = std::thread::Builder::new().name(format!("test latency {}", h)).spawn(move || -> Result<Option<Duration>, ErrorString> {
 	let start_delay = Duration::from_millis(500);
 	std::thread::sleep(start_delay);
-	url_get_latency(&h, &lat_net, "speedtest/latency.txt", 10,
+	url_get_latency(&h, &lat_net, "/speedtest/latency.txt", 10,
 			duration.checked_sub(start_delay).ok_or("test duration too short for latency test")?,
 			Duration::from_secs(1),
 			Some(|lat: Duration| {
@@ -1631,6 +1658,7 @@ fn speedtest(cfg: &TestProfile, idx: usize, state: &Arc<Mutex<SpeedTestState>>) 
 		    let name = n.attribute("name")?;
 		    let sponsor = n.attribute("sponsor")?;
 		    Some(SpeedTestServer {
+			http_host: n.attribute("host")?.to_string(),
 			descr: format!("{}/{}/{}", sponsor, name, country),
 			host: n.attribute("host")?.to_string(),
 			//                url: n.attribute("url")?.to_string(),
@@ -1650,6 +1678,7 @@ fn speedtest(cfg: &TestProfile, idx: usize, state: &Arc<Mutex<SpeedTestState>>) 
 	},
 	Some(x) => {
 	    servers = vec!(SpeedTestServer {
+		http_host: x.to_string(),
 		descr: "".into(),
 		host: x.to_string(),
 		id: 0,
@@ -1684,7 +1713,7 @@ fn speedtest(cfg: &TestProfile, idx: usize, state: &Arc<Mutex<SpeedTestState>>) 
     let mut upload_latency = None;
     if cfg.download_duration > 0 {
 	set_status(state, idx, "test download")?;
-	(download_mbps, download_latency) = test_multithread("download", &server.host, net, Duration::from_secs(cfg.download_duration as u64), &download_sizes, cfg.download_connections, test_download, |progress, speed, latency|{
+	(download_mbps, download_latency) = test_multithread("download", &server.http_host, net, Duration::from_secs(cfg.download_duration as u64), &download_sizes, cfg.download_connections, test_download, |progress, speed, latency|{
 	    if let Ok(mut state) = state.lock() {
 		if let Some(p) = state.profiles.get_mut(idx) {
 		    p.gauge_download_progress = Some(progress);
@@ -1704,7 +1733,7 @@ fn speedtest(cfg: &TestProfile, idx: usize, state: &Arc<Mutex<SpeedTestState>>) 
 
     if cfg.upload_duration > 0 {
 	set_status(state, idx, "test upload")?;
-	(upload_mbps, upload_latency) = test_multithread("upload", &server.host, net, Duration::from_secs(cfg.upload_duration as u64), &upload_sizes, cfg.upload_connections, test_upload, |progress, speed, latency|{
+	(upload_mbps, upload_latency) = test_multithread("upload", &server.http_host, net, Duration::from_secs(cfg.upload_duration as u64), &upload_sizes, cfg.upload_connections, test_upload, |progress, speed, latency|{
 	    if let Ok(mut state) = state.lock() {
 		if let Some(p) = state.profiles.get_mut(idx) {
 		    p.gauge_upload_progress = Some(progress);
@@ -3621,6 +3650,40 @@ mod tests {
 	    }
 	});
 	(addr, seen)
+    }
+
+    // answers with the response and gives the requests it got
+    fn fake_http_server(response: &'static str) -> (String, mpsc::Receiver<String>) {
+	let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+	let addr = listener.local_addr().unwrap().to_string();
+	let (tx, rx) = mpsc::channel();
+	std::thread::spawn(move || {
+	    for stream in listener.incoming() {
+		let mut stream = stream.unwrap();
+		let mut buf = [0; 1500];
+		let len = std::io::Read::read(&mut stream, &mut buf).unwrap();
+		let _ = tx.send(String::from_utf8_lossy(&buf[..len]).to_string());
+		std::io::Write::write_all(&mut stream, response.as_bytes()).unwrap();
+	    }
+	});
+	(addr, rx)
+    }
+
+    #[test]
+    fn servers_that_redirect_get_tested_there() {
+	let net = NetOpts::default();
+	let (addr, requests) = fake_http_server("HTTP/1.1 307 Temporary Redirect\r\nLocation: https://server-1.prod.hosts.ooklaserver.net:8080/speedtest/latency.txt\r\nContent-Length: 0\r\n\r\n");
+	assert_eq!(server_http_host(&addr, &net), "server-1.prod.hosts.ooklaserver.net:8080");
+	assert!(requests.recv().unwrap().starts_with("GET /speedtest/latency.txt HTTP/1.1\r\n"));
+	let (addr, _) = fake_http_server("HTTP/1.1 301 Moved\r\nLocation: https://example.com/speedtest/latency.txt\r\nContent-Length: 0\r\n\r\n");
+	assert_eq!(server_http_host(&addr, &net), "example.com");
+	// others stay as they are, the latency test finds out if they are usable
+	let (addr, _) = fake_http_server("HTTP/1.1 307 Temporary Redirect\r\nLocation: /elsewhere\r\nContent-Length: 0\r\n\r\n");
+	assert_eq!(server_http_host(&addr, &net), addr);
+	let (addr, _) = fake_http_server("HTTP/1.1 200 OK\r\nLocation: https://a.ooklaserver.net/\r\nContent-Length: 0\r\n\r\n");
+	assert_eq!(server_http_host(&addr, &net), addr);
+	let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+	assert_eq!(server_http_host(&closed, &net), closed);
     }
 
     // every test its own options, the lookups are remembered by them
