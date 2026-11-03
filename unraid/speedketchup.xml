@@ -45,5 +45,6 @@ A single statically linked binary of a few hundred kilobytes, the container imag
     <Config Name="Interface" Target="SPEEDKETCHUP_INTERFACE" Default="" Description="Network interface to test over, comma separated for several test profiles." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
     <Config Name="Source address" Target="SPEEDKETCHUP_SRC_ADDR" Default="" Description="Source address to test from, comma separated for several test profiles." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
     <Config Name="DSCP" Target="SPEEDKETCHUP_DSCP" Default="" Description="DSCP value 0-63 of the test traffic, for the router to pick a wan by, comma separated for several test profiles." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+    <Config Name="DNS server" Target="SPEEDKETCHUP_DNS_SERVER" Default="" Description="DNS server addr[:port] for the lookups of the test, asked the way the test goes, comma separated for several test profiles." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
     <Config Name="Overlapping tests" Target="SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS" Default="no" Description="yes runs the tests of different profiles at the same time." Type="Variable" Display="advanced" Required="false" Mask="false">no</Config>
 </Container>

@@ -53,6 +53,9 @@ pub const SETTINGS: &str = "# SpeedKetchup settings, one VARIABLE=value per line
 #SPEEDKETCHUP_SRC_ADDR=
 #SPEEDKETCHUP_DSCP=
 
+# Dns server addr[:port] for the lookups of the test, asked the way the test goes
+#SPEEDKETCHUP_DNS_SERVER=
+
 # yes runs the tests of different profiles at the same time
 #SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS=no
 ";

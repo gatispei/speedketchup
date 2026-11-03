@@ -51,11 +51,12 @@ Defaults are the values the container image ships with.
 |`SPEEDKETCHUP_INTERFACE`||network interface to test over|
 |`SPEEDKETCHUP_SRC_ADDR`||source address to test from|
 |`SPEEDKETCHUP_DSCP`||dscp value 0-63 of the test traffic, for the router to pick a wan by|
+|`SPEEDKETCHUP_DNS_SERVER`||dns server addr[:port] for the lookups of the test, asked the way the test goes|
 |`SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS`|`no`|run the tests of different profiles at the same time|
 
 Several test profiles, eg one for every wan of a dual-wan router, are given as
 comma separated values of the name, interval, server, duration, connections,
-interface, source address and dscp settings, one for every profile, an empty one
+interface, source address, dscp and dns server settings, one for every profile, an empty one
 is the default, a single value is for all of them, eg `SPEEDKETCHUP_NAME=wan1,wan2`
 and `SPEEDKETCHUP_DSCP=10,20`.
 

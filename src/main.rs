@@ -157,6 +157,7 @@ struct NetOpts {
     interface: Option<String>,
     src_addr: Option<std::net::IpAddr>,
     dscp: Option<u8>,
+    dns_server: Option<std::net::SocketAddr>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -309,14 +310,29 @@ mod c {
     #[link(name = "iphlpapi")]
     extern "system" {
 	pub fn if_nametoindex(name: *const libc::c_char) -> u32;
+	pub fn GetNetworkParams(info: *mut FIXED_INFO, len: *mut u32) -> u32;
+    }
+    #[repr(C)]
+    pub struct IP_ADDR_STRING {
+	pub next: *const IP_ADDR_STRING,
+	pub addr: [u8; 16],
+	pub mask: [u8; 16],
+	pub context: u32,
+    }
+    #[repr(C)]
+    pub struct FIXED_INFO {
+	pub host_name: [u8; 132],
+	pub domain_name: [u8; 132],
+	pub current_dns_server: *const IP_ADDR_STRING,
+	pub dns_server_list: IP_ADDR_STRING,
     }
 }
 
 // the socket calls std has no way to make before it connects
 #[cfg(unix)]
 mod sock {
-    use std::os::fd::{AsRawFd, FromRawFd};
-    use std::net::TcpStream;
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
+    use std::net::{TcpStream, UdpSocket};
     pub const AF_INET: i32 = libc::AF_INET;
     pub const AF_INET6: i32 = libc::AF_INET6;
     pub const IPPROTO_IP: i32 = libc::IPPROTO_IP;
@@ -330,13 +346,17 @@ mod sock {
 	    _ => Err(std::io::Error::last_os_error()),
 	}
     }
-    pub fn socket(family: i32) -> std::io::Result<TcpStream> {
+    // a TcpStream for the calls here to take, into_udp is the type of a udp one
+    pub fn socket(family: i32, udp: bool) -> std::io::Result<TcpStream> {
 	unsafe {
-	    match libc::socket(family, libc::SOCK_STREAM, 0) {
+	    match libc::socket(family, if udp { libc::SOCK_DGRAM } else { libc::SOCK_STREAM }, 0) {
 		-1 => Err(std::io::Error::last_os_error()),
 		fd => Ok(TcpStream::from_raw_fd(fd)),
 	    }
 	}
+    }
+    pub fn into_udp(stream: TcpStream) -> UdpSocket {
+	unsafe { UdpSocket::from_raw_fd(stream.into_raw_fd()) }
     }
     pub fn setsockopt(stream: &TcpStream, level: i32, name: i32, val: &[u8]) -> std::io::Result<()> {
 	check(unsafe { libc::setsockopt(stream.as_raw_fd(), level, name, val.as_ptr() as _, val.len() as _) })
@@ -354,8 +374,8 @@ mod sock {
 
 #[cfg(windows)]
 mod sock {
-    use std::os::windows::io::{AsRawSocket, FromRawSocket};
-    use std::net::TcpStream;
+    use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket};
+    use std::net::{TcpStream, UdpSocket};
     pub const AF_INET: i32 = 2;
     pub const AF_INET6: i32 = 23;
     pub const IPPROTO_IP: i32 = 0;
@@ -369,14 +389,18 @@ mod sock {
 	    _ => Err(std::io::Error::last_os_error()),
 	}
     }
-    pub fn socket(family: i32) -> std::io::Result<TcpStream> {
+    // a TcpStream for the calls here to take, into_udp is the type of a udp one
+    pub fn socket(family: i32, udp: bool) -> std::io::Result<TcpStream> {
 	unsafe {
-	    // SOCK_STREAM, the winsock of std is started by the listening socket
-	    match super::c::socket(family, 1, 0) {
+	    // SOCK_DGRAM or SOCK_STREAM, the winsock of std is started by the listening socket
+	    match super::c::socket(family, if udp { 2 } else { 1 }, 0) {
 		usize::MAX => Err(std::io::Error::last_os_error()),
 		s => Ok(TcpStream::from_raw_socket(s as _)),
 	    }
 	}
+    }
+    pub fn into_udp(stream: TcpStream) -> UdpSocket {
+	unsafe { UdpSocket::from_raw_socket(stream.into_raw_socket()) }
     }
     pub fn setsockopt(stream: &TcpStream, level: i32, name: i32, val: &[u8]) -> std::io::Result<()> {
 	check(unsafe { super::c::setsockopt(stream.as_raw_socket() as usize, level, name, val.as_ptr(), val.len() as i32) })
@@ -701,25 +725,31 @@ fn bind_interface(stream: &std::net::TcpStream, ipv4: bool, name: &str) -> Resul
     }
 }
 
-fn tcp_connect(addr: &std::net::SocketAddr, net: &NetOpts, timeout: Duration) -> Result<std::net::TcpStream, ErrorString> {
-    if *net == NetOpts::default() {
-	return Ok(std::net::TcpStream::connect_timeout(addr, timeout)?);
-    }
-    let stream = sock::socket(if addr.is_ipv4() { sock::AF_INET } else { sock::AF_INET6 })
+// a socket that goes the way of the options
+fn net_socket(ipv4: bool, udp: bool, net: &NetOpts) -> Result<std::net::TcpStream, ErrorString> {
+    let stream = sock::socket(if ipv4 { sock::AF_INET } else { sock::AF_INET6 }, udp)
 	.map_err(|e| format!("socket: {e}"))?;
     if let Some(dscp) = net.dscp {
 	let tos = (dscp as i32) << 2;
-	match addr.is_ipv4() {
+	match ipv4 {
 	    true => sock::setsockopt(&stream, sock::IPPROTO_IP, sock::IP_TOS, &tos.to_ne_bytes()),
 	    false => sock::setsockopt(&stream, sock::IPPROTO_IPV6, sock::IPV6_TCLASS, &tos.to_ne_bytes()),
 	}.map_err(|e| format!("dscp {dscp}: {e}"))?;
     }
     if let Some(interface) = &net.interface {
-	bind_interface(&stream, addr.is_ipv4(), interface).map_err(|e| format!("interface {interface}: {e}"))?;
+	bind_interface(&stream, ipv4, interface).map_err(|e| format!("interface {interface}: {e}"))?;
     }
     if let Some(src_addr) = net.src_addr {
 	sock::bind(&stream, &sockaddr(&std::net::SocketAddr::new(src_addr, 0))).map_err(|e| format!("source address {src_addr}: {e}"))?;
     }
+    Ok(stream)
+}
+
+fn tcp_connect(addr: &std::net::SocketAddr, net: &NetOpts, timeout: Duration) -> Result<std::net::TcpStream, ErrorString> {
+    if *net == NetOpts::default() {
+	return Ok(std::net::TcpStream::connect_timeout(addr, timeout)?);
+    }
+    let stream = net_socket(addr.is_ipv4(), false, net)?;
     stream.set_nonblocking(true)?;
     match sock::connect(&stream, &sockaddr(addr)) {
 	Ok(()) => return Ok(stream),
@@ -732,6 +762,320 @@ fn tcp_connect(addr: &std::net::SocketAddr, net: &NetOpts, timeout: Duration) ->
     }
     waited?;
     Ok(stream)
+}
+
+fn dns_query(name: &str, qtype: u16) -> Result<Vec<u8>, ErrorString> {
+    let id = std::hash::BuildHasher::hash_one(&std::collections::hash_map::RandomState::new(), name) as u16;
+    let mut query = id.to_be_bytes().to_vec();
+    // recursion desired, one question
+    query.extend_from_slice(&[1, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+    let name = name.strip_suffix('.').unwrap_or(name);
+    if name.len() > 253 {
+	return Err("name too long".into());
+    }
+    for label in name.split('.') {
+	if label.is_empty() || label.len() > 63 {
+	    return Err("bad name".into());
+	}
+	query.push(label.len() as u8);
+	query.extend_from_slice(label.as_bytes());
+    }
+    query.push(0);
+    query.extend_from_slice(&qtype.to_be_bytes());
+    query.extend_from_slice(&[0, 1]);
+    Ok(query)
+}
+
+fn dns_skip_name(resp: &[u8], mut pos: usize) -> Option<usize> {
+    loop {
+	match *resp.get(pos)? {
+	    0 => return Some(pos + 1),
+	    len if len & 0xc0 == 0xc0 => return Some(pos + 2),
+	    len => pos += 1 + len as usize,
+	}
+    }
+}
+
+// the addresses of the type asked for, none when the name does not exist. None
+// when the server can't answer. Not the response to the query is an error, it may
+// not be from the server at all
+fn dns_parse_response(resp: &[u8], query: &[u8]) -> Result<Option<Vec<std::net::IpAddr>>, ErrorString> {
+    let header = resp.get(0..12).ok_or("short response")?;
+    let question = resp.get(12..query.len()).ok_or("short response")?;
+    if header[0..2] != query[0..2] || header[2] & 0x80 == 0 || header[4..6] != query[4..6] || !question.eq_ignore_ascii_case(&query[12..]) {
+	return Err("not the response".into());
+    }
+    match header[3] & 0xf {
+	0 => (),
+	3 => return Ok(Some(vec!())),
+	_ => return Ok(None),
+    }
+    let qtype = u16::from_be_bytes([query[query.len() - 4], query[query.len() - 3]]);
+    let mut pos = query.len();
+    let mut addrs = vec!();
+    for _ in 0..u16::from_be_bytes([header[6], header[7]]) {
+	pos = dns_skip_name(resp, pos).ok_or("short response")?;
+	let fixed = resp.get(pos..pos + 10).ok_or("short response")?;
+	let kind = u16::from_be_bytes([fixed[0], fixed[1]]);
+	let len = u16::from_be_bytes([fixed[8], fixed[9]]) as usize;
+	let data = resp.get(pos + 10..pos + 10 + len).ok_or("short response")?;
+	pos += 10 + len;
+	if kind != qtype {
+	    continue;
+	}
+	if let Ok(a) = <[u8; 4]>::try_from(data) {
+	    addrs.push(std::net::IpAddr::from(a));
+	}
+	else if let Ok(a) = <[u8; 16]>::try_from(data) {
+	    addrs.push(std::net::IpAddr::from(a));
+	}
+    }
+    Ok(Some(addrs))
+}
+
+// like musl: asks all the queries of all the servers at once and again after a
+// while, as udp gets lost, and takes the first answer to each. A truncated answer
+// is good for its addresses, one is all that is needed. Err when there was none
+fn dns_ask(servers: &[std::net::SocketAddr], net: &NetOpts, queries: &[Vec<u8>], timeout: Duration) -> Result<Vec<std::net::IpAddr>, ErrorString> {
+    let first = servers.first().ok_or("no usable dns server")?;
+    let socket = sock::into_udp(net_socket(first.is_ipv4(), true, net)?);
+    let mut waiting: Vec<_> = servers.iter().filter(|s| s.is_ipv4() == first.is_ipv4()).collect();
+    let mut answers: Vec<Option<Vec<std::net::IpAddr>>> = vec![None; queries.len()];
+    let now = Instant::now();
+    let mut resend = Duration::ZERO;
+    let mut err: ErrorString = "timeout".into();
+    let mut buf = [0; 1500];
+    while !waiting.is_empty() && answers.iter().any(|a| a.is_none()) {
+	if now.elapsed() >= resend {
+	    resend += DNS_RESEND;
+	    let mut sent = false;
+	    for (query, _) in queries.iter().zip(&answers).filter(|(_, a)| a.is_none()) {
+		for server in &waiting {
+		    match socket.send_to(query, server) {
+			Ok(_) => sent = true,
+			Err(e) => err = format!("{server}: {e}").into(),
+		    }
+		}
+	    }
+	    if !sent {
+		break;
+	    }
+	}
+	let Some(left) = timeout.checked_sub(now.elapsed()) else { break };
+	let wait = left.min(resend.saturating_sub(now.elapsed()));
+	if wait.is_zero() {
+	    continue;
+	}
+	socket.set_read_timeout(Some(wait))?;
+	let (len, from) = match socket.recv_from(&mut buf) {
+	    Ok(x) => x,
+	    // includes the unreachable server of windows, the others may answer yet
+	    Err(_) => continue,
+	};
+	if !waiting.contains(&&from) {
+	    continue;
+	}
+	for (query, answer) in queries.iter().zip(&mut answers) {
+	    match dns_parse_response(&buf[..len], query) {
+		Ok(Some(addrs)) => {
+		    answer.get_or_insert(addrs);
+		    break;
+		},
+		Ok(None) => {
+		    // like with a refused, does not get asked again
+		    err = format!("{from}: can't answer").into();
+		    waiting.retain(|s| **s != from);
+		    break;
+		},
+		Err(_) => (),
+	    }
+	}
+    }
+    if answers.iter().all(|a| a.is_none()) {
+	return Err(err);
+    }
+    Ok(answers.into_iter().flatten().flatten().collect())
+}
+
+// the rfc 6724 policy table, the precedence and label of an address
+fn dns_policy(addr: &std::net::Ipv6Addr) -> (u8, u8) {
+    let bits = u128::from(*addr);
+    let matches = |prefix: u128, len: u32| bits >> (128 - len) == prefix >> (128 - len);
+    if bits == 1 { (50, 0) }
+    else if matches(0xffff_0000_0000, 96) { (35, 4) }
+    else if matches(0, 96) { (1, 3) }
+    else if matches(0x2001 << 112, 32) { (5, 5) }
+    else if matches(0x2002 << 112, 16) { (30, 6) }
+    else if matches(0x3ffe << 112, 16) { (1, 12) }
+    else if matches(0xfc00 << 112, 7) { (3, 13) }
+    else if matches(0xfec0 << 112, 10) { (1, 11) }
+    else { (40, 1) }
+}
+
+fn dns_scope(addr: &std::net::Ipv6Addr) -> u8 {
+    let bits = u128::from(*addr);
+    if bits >> 120 == 0xff { (bits >> 112) as u8 & 15 }
+    else if bits == 1 || bits >> 118 == 0xfe80 >> 6 { 2 }
+    else if bits >> 118 == 0xfec0 >> 6 { 5 }
+    else { 14 }
+}
+
+fn dns_mapped(addr: &std::net::IpAddr) -> std::net::Ipv6Addr {
+    match addr {
+	std::net::IpAddr::V4(a) => a.to_ipv6_mapped(),
+	std::net::IpAddr::V6(a) => *a,
+    }
+}
+
+// how good a destination is by rfc 6724, the same as musl, source is the address
+// a connection to it would get, none when it can't be reached
+fn dns_sort_key(dest: &std::net::IpAddr, source: Option<std::net::IpAddr>) -> (bool, bool, bool, u8, u8, u32) {
+    let dest = dns_mapped(dest);
+    let (prec, label) = dns_policy(&dest);
+    let scope = dns_scope(&dest);
+    let (scope_match, label_match, prefix) = match source.as_ref().map(dns_mapped) {
+	None => (false, false, 0),
+	Some(source) => (scope == dns_scope(&source), label == dns_policy(&source).1,
+			 (u128::from(source) ^ u128::from(dest)).leading_zeros()),
+    };
+    (source.is_some(), scope_match, label_match, prec, 15 - scope, prefix)
+}
+
+// like musl, by what the routes of the options say, the system resolver only
+// knows the routes without them. Addresses of just ipv4 stay as the server has them
+fn dns_sort(addrs: &mut Vec<std::net::IpAddr>, net: &NetOpts) {
+    if addrs.iter().all(|a| a.is_ipv4()) {
+	return;
+    }
+    addrs.sort_by_cached_key(|dest| {
+	let source = net_socket(dest.is_ipv4(), true, net).ok().and_then(|socket| {
+	    let socket = sock::into_udp(socket);
+	    socket.connect(std::net::SocketAddr::new(*dest, 53)).ok()?;
+	    Some(socket.local_addr().ok()?.ip())
+	});
+	std::cmp::Reverse(dns_sort_key(dest, source))
+    });
+}
+
+// a loopback server, like that of systemd-resolved or docker, can't be reached
+// the way of a test
+fn dns_servers_usable(servers: Vec<std::net::IpAddr>) -> Vec<std::net::SocketAddr> {
+    servers.into_iter().filter(|a| !a.is_loopback() && !a.is_unspecified()).take(3)
+	.map(|a| std::net::SocketAddr::new(a, 53)).collect()
+}
+
+#[cfg(unix)]
+fn dns_servers() -> Vec<std::net::SocketAddr> {
+    let conf = std::fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
+    dns_servers_usable(conf.lines().filter_map(|line| {
+	let mut words = line.split_whitespace();
+	match words.next() {
+	    Some("nameserver") => words.next()?.parse().ok(),
+	    _ => None,
+	}
+    }).collect())
+}
+
+#[cfg(windows)]
+fn dns_servers() -> Vec<std::net::SocketAddr> {
+    let mut buf = vec![0_u64; 2048];
+    let mut len = (buf.len() * 8) as u32;
+    let info = buf.as_mut_ptr() as *mut c::FIXED_INFO;
+    let mut servers = vec!();
+    unsafe {
+	if c::GetNetworkParams(info, &mut len) != 0 {
+	    return vec!();
+	}
+	let mut server: *const c::IP_ADDR_STRING = &(*info).dns_server_list;
+	while !server.is_null() {
+	    let addr = (*server).addr;
+	    let end = addr.iter().position(|c| *c == 0).unwrap_or(addr.len());
+	    if let Some(a) = std::str::from_utf8(&addr[..end]).ok().and_then(|a| a.parse().ok()) {
+		servers.push(a);
+	    }
+	    server = (*server).next;
+	}
+    }
+    dns_servers_usable(servers)
+}
+
+// the record types a connection of these options can use, best address first. Err
+// when the servers did not answer
+fn dns_lookup(servers: &[std::net::SocketAddr], net: &NetOpts, name: &str) -> Result<Vec<std::net::IpAddr>, ErrorString> {
+    const A: u16 = 1;
+    const AAAA: u16 = 28;
+    let qtypes: &[u16] = match net.src_addr {
+	Some(a) if a.is_ipv6() => &[AAAA],
+	Some(_) => &[A],
+	None => &[A, AAAA],
+    };
+    let queries = qtypes.iter().map(|q| dns_query(name, *q)).collect::<Result<Vec<_>, _>>()?;
+    // a source address only reaches servers of its own family
+    let servers: Vec<_> = servers.iter().filter(|s| net.src_addr.map(|a| a.is_ipv4() == s.is_ipv4()).unwrap_or(true)).copied().collect();
+    let mut addrs = dns_ask(&servers, net, &queries, NET_LOOKUP_TIMEOUT)?;
+    dns_sort(&mut addrs, net);
+    Ok(addrs)
+}
+
+struct NetLookup {
+    net: NetOpts,
+    // empty for the servers not answering, so only the first name waits for them
+    name: String,
+    time: Instant,
+    addrs: Vec<std::net::IpAddr>,
+}
+
+// a lookup here is more than the time of a request, keep it out of the latencies
+const NET_LOOKUP_KEEP: Duration = Duration::from_secs(60);
+const NET_LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
+const DNS_RESEND: Duration = Duration::from_millis(700);
+static NET_LOOKUPS: Mutex<Vec<NetLookup>> = Mutex::new(Vec::new());
+
+// the address of a host, looked up the way the test connections of these options
+// go, the dns server of the wan may be down or the answer differ by the wan. None
+// is for the system resolver: no options, an address, a name just it knows like
+// from /etc/hosts, or the servers can't be reached this way, which tells nothing
+// of the wan, a router can be its own dns server and not route marked traffic to
+// it. A dns server of the profile is all there is, without it the lookup fails
+fn net_lookup<F>(host: &str, net: &NetOpts, servers: F) -> Result<Option<std::net::SocketAddr>, ErrorString>
+where F: FnOnce() -> Vec<std::net::SocketAddr> {
+    if *net == NetOpts::default() || host.parse::<std::net::SocketAddr>().is_ok() || host.parse::<std::net::IpAddr>().is_ok() {
+	return Ok(None);
+    }
+    let (name, port) = match host.rsplit_once(':') {
+	Some((name, port)) => match port.parse() {
+	    Ok(port) => (name, port),
+	    Err(_) => return Ok(None),
+	},
+	None => (host, 80),
+    };
+    if name.parse::<std::net::IpAddr>().is_ok() {
+	return Ok(None);
+    }
+    {
+	let mut lookups = NET_LOOKUPS.lock().unwrap_or_else(PoisonError::into_inner);
+	lookups.retain(|l| l.time.elapsed() < NET_LOOKUP_KEEP);
+	if let Some(l) = lookups.iter().find(|l| l.net == *net && (l.name == name || l.name.is_empty())) {
+	    return Ok(l.addrs.first().map(|a| std::net::SocketAddr::new(*a, port)));
+	}
+    }
+    let servers = match net.dns_server {
+	Some(server) => vec![server],
+	None => servers(),
+    };
+    let (entry_name, addrs) = match (dns_lookup(&servers, net, name), net.dns_server) {
+	(Ok(addrs), Some(server)) if addrs.is_empty() => return Err(format!("dns server {server}: no address for {name}").into()),
+	(Ok(addrs), _) => (name, addrs),
+	(Err(e), Some(server)) => return Err(format!("dns server {server}: lookup of {name}: {e}").into()),
+	(Err(e), None) => {
+	    pr!("dns lookup of {name}: {e}, using the system resolver");
+	    ("", vec!())
+	},
+    };
+    let addr = addrs.first().map(|a| std::net::SocketAddr::new(*a, port));
+    NET_LOOKUPS.lock().unwrap_or_else(PoisonError::into_inner)
+	.push(NetLookup { net: net.clone(), name: entry_name.to_string(), time: Instant::now(), addrs });
+    Ok(addr)
 }
 
 //#[inline(never)]
@@ -752,14 +1096,19 @@ where
     WRITE: FnMut(usize) -> ()
 {
     let now = Instant::now();
-    let mut sock_addrs = match std::net::ToSocketAddrs::to_socket_addrs(host) {
-	Ok(x) => x,
-	Err(_) => std::net::ToSocketAddrs::to_socket_addrs(&(host, 80))
-	    .map_err(|e| format!("http_request: to_socket_addrs {e}"))?
+    let sock_addr = match net_lookup(host, net, dns_servers).map_err(|e| format!("http_request: {e}"))? {
+	Some(addr) => addr,
+	None => {
+	    let mut sock_addrs = match std::net::ToSocketAddrs::to_socket_addrs(host) {
+		Ok(x) => x,
+		Err(_) => std::net::ToSocketAddrs::to_socket_addrs(&(host, 80))
+		    .map_err(|e| format!("http_request: to_socket_addrs {e}"))?
+	    };
+	    // a source address only reaches addresses of its own family
+	    sock_addrs.find(|a| net.src_addr.map(|s| s.is_ipv4() == a.is_ipv4()).unwrap_or(true))
+		.ok_or("htpp_request: no addr")?
+	},
     };
-    // a source address only reaches addresses of its own family
-    let sock_addr = sock_addrs.find(|a| net.src_addr.map(|s| s.is_ipv4() == a.is_ipv4()).unwrap_or(true))
-	.ok_or("htpp_request: no addr")?;
 //    pr!("http_request {host} {path} {method} {sock_addr} {:?} {send_data_size}", duration);
     let mut tcp_stream = tcp_connect(&sock_addr, net, duration)
 	.map_err(|e| format!("http_request: connect {e}"))?;
@@ -2451,6 +2800,8 @@ const HELP: &str = "usage: speedketchup [options]
 		windows: the Idx of 'netsh interface ipv4 show interfaces'
 	-sa|--src-addr <addr>: source address to test from
 	-ds|--dscp <0-63>: dscp value of the test traffic, for the router to pick a wan by, not on windows
+	-dn|--dns-server <addr[:port]>: dns server for the lookups of the test, asked the way the test goes
+		the servers of the system by default, the system resolver if they don't answer that way
 	-ao|--allow-overlapping-tests <yes|no>: run the tests of different profiles at the same time, no by default
 	--tray: windows only, run as the tray icon, as when started from the start menu
 
@@ -2462,12 +2813,13 @@ take precedence:
 	SPEEDKETCHUP_UPLOAD_CONNECTIONS, SPEEDKETCHUP_INFLUX_URL,
 	SPEEDKETCHUP_INFLUX_TOKEN, SPEEDKETCHUP_MQTT, SPEEDKETCHUP_MQTT_USER,
 	SPEEDKETCHUP_MQTT_PASSWORD, SPEEDKETCHUP_NAME, SPEEDKETCHUP_INTERFACE,
-	SPEEDKETCHUP_SRC_ADDR, SPEEDKETCHUP_DSCP, SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS
+	SPEEDKETCHUP_SRC_ADDR, SPEEDKETCHUP_DSCP, SPEEDKETCHUP_DNS_SERVER,
+	SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS
 
 several test profiles, eg one for every wan, are given as comma separated values
-of the name, interval, server, duration, connections, interface, src-addr and dscp
-options, one for every profile. An empty one is the default, a single value is
-for all the profiles:
+of the name, interval, server, duration, connections, interface, src-addr, dscp
+and dns-server options, one for every profile. An empty one is the default, a
+single value is for all the profiles:
 	speedketchup -n wan1,wan2 -sa 192.0.2.1,198.51.100.1 -i 10,30
 ";
 fn server_with_port(host: &str) -> String {
@@ -2523,6 +2875,7 @@ const PROFILE_VARS: &[&str] = &[
     "SPEEDKETCHUP_DOWNLOAD_DURATION", "SPEEDKETCHUP_DOWNLOAD_CONNECTIONS",
     "SPEEDKETCHUP_UPLOAD_DURATION", "SPEEDKETCHUP_UPLOAD_CONNECTIONS",
     "SPEEDKETCHUP_INTERFACE", "SPEEDKETCHUP_SRC_ADDR", "SPEEDKETCHUP_DSCP",
+    "SPEEDKETCHUP_DNS_SERVER",
 ];
 
 // the SPEEDKETCHUP_* settings over config, var looks one of them up, a bad
@@ -2583,6 +2936,11 @@ fn config_from_vars(config: &mut SpeedTestConfig, var: &dyn Fn(&str) -> Option<S
 	    x => { p.net.dscp = Some(x); Ok(()) },
 	}
     });
+    set("SPEEDKETCHUP_DNS_SERVER", &|p, v| {
+	let addr = v.parse().ok().or_else(|| v.parse().ok().map(|a| std::net::SocketAddr::new(a, 53)));
+	p.net.dns_server = Some(addr.ok_or(format!("bad SPEEDKETCHUP_DNS_SERVER value '{v}', it is addr[:port]"))?);
+	Ok(())
+    });
     // the names tell the profiles apart everywhere
     let mut names: Vec<_> = profiles.iter().map(|p| p.name.as_str()).filter(|n| n.len() > 0).collect();
     let named = names.len();
@@ -2626,6 +2984,7 @@ const OPTIONS: &[(&str, &str, &str)] = &[
     ("-if", "--interface", "SPEEDKETCHUP_INTERFACE"),
     ("-sa", "--src-addr", "SPEEDKETCHUP_SRC_ADDR"),
     ("-ds", "--dscp", "SPEEDKETCHUP_DSCP"),
+    ("-dn", "--dns-server", "SPEEDKETCHUP_DNS_SERVER"),
     ("-ao", "--allow-overlapping-tests", "SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS"),
 ];
 
@@ -2806,6 +3165,9 @@ fn main() {
 	    if cfg!(windows) {
 		pr!("windows ignores the dscp value of a socket, a QoS policy sets it");
 	    }
+	}
+	if let Some(x) = &p.net.dns_server {
+	    println!("{ATTR_GREEN}dns server: {ATTR_BOLD}{x}{ATTR_RESET}");
 	}
     }
     if config.profiles.len() > 1 {
@@ -3199,7 +3561,7 @@ mod tests {
     fn src_addr_connects_from_that_address() {
 	let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
 	let addr = listener.local_addr().unwrap();
-	let net = NetOpts { interface: None, src_addr: "127.0.0.1".parse().ok(), dscp: Some(46) };
+	let net = NetOpts { interface: None, src_addr: "127.0.0.1".parse().ok(), dscp: Some(46), ..Default::default() };
 	let stream = tcp_connect(&addr, &net, Duration::from_secs(3)).map_err(|e| e.to_string()).unwrap();
 	assert_eq!(stream.local_addr().unwrap().ip(), net.src_addr.unwrap());
 	assert_eq!(stream.peer_addr().unwrap(), addr);
@@ -3209,7 +3571,7 @@ mod tests {
     #[test]
     fn dscp_is_set_on_the_socket() {
 	let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-	let net = NetOpts { interface: None, src_addr: None, dscp: Some(46) };
+	let net = NetOpts { interface: None, src_addr: None, dscp: Some(46), ..Default::default() };
 	let stream = tcp_connect(&listener.local_addr().unwrap(), &net, Duration::from_secs(3)).map_err(|e| e.to_string()).unwrap();
 	let (mut tos, mut len) = (0 as libc::c_int, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
 	let ret = unsafe {
@@ -3223,9 +3585,255 @@ mod tests {
 	let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
 	let addr = listener.local_addr().unwrap();
 	drop(listener);
-	let net = NetOpts { interface: None, src_addr: None, dscp: Some(0) };
+	let net = NetOpts { interface: None, src_addr: None, dscp: Some(0), ..Default::default() };
 	assert!(tcp_connect(&addr, &net, Duration::from_secs(3)).is_err());
-	let net = NetOpts { interface: Some("no-such-interface".to_string()), src_addr: None, dscp: None };
+	let net = NetOpts { interface: Some("no-such-interface".to_string()), src_addr: None, dscp: None, ..Default::default() };
 	assert!(tcp_connect(&addr, &net, Duration::from_secs(3)).is_err());
+    }
+
+    // answers every query from its table, by the record type
+    fn fake_dns_server(rcode: u8, answers: &'static [(u16, &'static [u8])]) -> (std::net::SocketAddr, Arc<Mutex<Vec<(std::net::IpAddr, u16)>>>) {
+	let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+	let addr = socket.local_addr().unwrap();
+	let seen = Arc::new(Mutex::new(vec!()));
+	let seen2 = seen.clone();
+	std::thread::spawn(move || {
+	    let mut buf = [0; 1500];
+	    loop {
+		let (len, peer) = socket.recv_from(&mut buf).unwrap();
+		let query = &buf[..len];
+		let qtype = u16::from_be_bytes([query[len - 4], query[len - 3]]);
+		seen2.lock().unwrap().push((peer.ip(), qtype));
+		// a cname first, as a pointer to the question, then the addresses
+		let found: Vec<_> = answers.iter().filter(|a| a.0 == qtype).collect();
+		let mut resp = query.to_vec();
+		resp[2] = 0x81;
+		resp[3] = 0x80 | rcode;
+		resp[7] = found.len() as u8 + 1;
+		resp.extend_from_slice(&[0xc0, 12, 0, 5, 0, 1, 0, 0, 0, 9, 0, 2, 0xc0, 12]);
+		for (kind, data) in &found {
+		    resp.extend_from_slice(&[0xc0, 12]);
+		    resp.extend_from_slice(&kind.to_be_bytes());
+		    resp.extend_from_slice(&[0, 1, 0, 0, 0, 9, 0, data.len() as u8]);
+		    resp.extend_from_slice(data);
+		}
+		socket.send_to(&resp, peer).unwrap();
+	    }
+	});
+	(addr, seen)
+    }
+
+    // every test its own options, the lookups are remembered by them
+    fn net_with_dscp(dscp: u8) -> NetOpts {
+	NetOpts { interface: None, src_addr: None, dscp: Some(dscp), ..Default::default() }
+    }
+
+    // just the query for the a record
+    fn net_with_src(dscp: u8) -> NetOpts {
+	NetOpts { src_addr: "127.0.0.1".parse().ok(), ..net_with_dscp(dscp) }
+    }
+
+    fn test_lookup<F>(host: &str, net: &NetOpts, servers: F) -> Option<std::net::SocketAddr>
+    where F: FnOnce() -> Vec<std::net::SocketAddr> {
+	net_lookup(host, net, servers).ok().flatten()
+    }
+
+    #[test]
+    fn lookups_use_the_options_of_the_profile_and_are_remembered() {
+	let (server, seen) = fake_dns_server(0, &[(1, &[192, 0, 2, 7])]);
+	let net = NetOpts { interface: None, src_addr: "127.0.0.1".parse().ok(), dscp: Some(1), ..Default::default() };
+	let addr = test_lookup("speed.example.com:8080", &net, || vec![server]);
+	assert_eq!(addr, "192.0.2.7:8080".parse().ok());
+	let addr = test_lookup("speed.example.com", &net, || panic!("asked again"));
+	assert_eq!(addr, "192.0.2.7:80".parse().ok());
+	// just the a record, a source address only reaches its own family
+	assert_eq!(*seen.lock().unwrap(), vec![("127.0.0.1".parse().unwrap(), 1)]);
+	assert_ne!(test_lookup("speed.example.com", &net_with_dscp(2), || vec!()), "192.0.2.7:80".parse().ok());
+    }
+
+    #[test]
+    fn lookups_fall_to_aaaa_without_an_a_record() {
+	const V6: [u8; 16] = [0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+	let (server, seen) = fake_dns_server(0, &[(28, &V6)]);
+	assert_eq!(test_lookup("v6.example.com", &net_with_dscp(3), || vec![server]), "[2001:db8::1]:80".parse().ok());
+	assert_eq!(seen.lock().unwrap().iter().map(|s| s.1).collect::<Vec<_>>(), vec![1, 28]);
+    }
+
+    #[test]
+    fn lookups_leave_to_the_system_what_they_can_not_answer() {
+	// no options, addresses
+	assert_eq!(test_lookup("speed.example.com", &NetOpts::default(), || panic!("asked")), None);
+	assert_eq!(test_lookup("192.0.2.1:8080", &net_with_dscp(4), || panic!("asked")), None);
+	assert_eq!(test_lookup("[2001:db8::1]:8080", &net_with_dscp(4), || panic!("asked")), None);
+	assert_eq!(test_lookup("2001:db8::1", &net_with_dscp(4), || panic!("asked")), None);
+	assert_eq!(test_lookup("192.0.2.1", &net_with_dscp(4), || panic!("asked")), None);
+	// a name it does not have is only for that name
+	let (server, _) = fake_dns_server(3, &[]);
+	assert_eq!(test_lookup("nas.home", &net_with_dscp(5), || vec![server]), None);
+	assert_eq!(test_lookup("nas.home", &net_with_dscp(5), || panic!("asked again")), None);
+	let (good, _) = fake_dns_server(0, &[(1, &[192, 0, 2, 8])]);
+	assert_eq!(test_lookup("speed.example.com", &net_with_dscp(5), || vec![good]), "192.0.2.8:80".parse().ok());
+	// servers that do not answer are for all names, so only the first waits
+	let closed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+	assert_eq!(test_lookup("a.example.com", &net_with_dscp(6), || vec![closed]), None);
+	assert_eq!(test_lookup("b.example.com", &net_with_dscp(6), || panic!("asked again")), None);
+	assert_eq!(test_lookup("a.example.com", &net_with_dscp(7), || vec!()), None);
+    }
+
+    #[test]
+    fn lookups_take_the_answer_of_any_server() {
+	let closed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+	let (failing, _) = fake_dns_server(2, &[]);
+	let (good, _) = fake_dns_server(0, &[(1, &[192, 0, 2, 9])]);
+	let now = Instant::now();
+	assert_eq!(test_lookup("speed.example.com", &net_with_dscp(8), || vec![closed, failing, good]), "192.0.2.9:80".parse().ok());
+	assert!(now.elapsed() < DNS_RESEND);
+    }
+
+    #[test]
+    fn lookups_ask_again_when_udp_gets_lost() {
+	let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+	let server = socket.local_addr().unwrap();
+	std::thread::spawn(move || {
+	    let mut buf = [0; 1500];
+	    // the first query is lost
+	    socket.recv_from(&mut buf).unwrap();
+	    let (len, peer) = socket.recv_from(&mut buf).unwrap();
+	    let mut resp = buf[..len].to_vec();
+	    resp[2] = 0x81;
+	    resp[7] = 1;
+	    resp.extend_from_slice(&[0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 9, 0, 4, 192, 0, 2, 10]);
+	    socket.send_to(&resp, peer).unwrap();
+	});
+	assert_eq!(test_lookup("speed.example.com", &net_with_src(9), || vec![server]), "192.0.2.10:80".parse().ok());
+    }
+
+    #[test]
+    fn answers_from_elsewhere_are_ignored() {
+	let spoofer = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+	let server = spoofer.local_addr().unwrap();
+	let other = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+	std::thread::spawn(move || {
+	    let mut buf = [0; 1500];
+	    let (len, peer) = spoofer.recv_from(&mut buf).unwrap();
+	    let mut resp = buf[..len].to_vec();
+	    resp[2] = 0x81;
+	    resp[7] = 1;
+	    resp.extend_from_slice(&[0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 9, 0, 4, 192, 0, 2, 66]);
+	    other.send_to(&resp, peer).unwrap();
+	    // the right address but another name, then the real answer
+	    let mut wrong = resp.clone();
+	    wrong[13] ^= 1;
+	    spoofer.send_to(&wrong, peer).unwrap();
+	    *resp.last_mut().unwrap() = 11;
+	    spoofer.send_to(&resp, peer).unwrap();
+	});
+	assert_eq!(test_lookup("speed.example.com", &net_with_src(10), || vec![server]), "192.0.2.11:80".parse().ok());
+    }
+
+    #[test]
+    fn servers_that_can_not_answer_do_not_take_the_timeout() {
+	let (failing, _) = fake_dns_server(5, &[]);
+	let now = Instant::now();
+	assert_eq!(test_lookup("speed.example.com", &net_with_dscp(11), || vec![failing]), None);
+	assert!(now.elapsed() < DNS_RESEND);
+    }
+
+    #[test]
+    fn dns_responses_that_are_broken_are_errors() {
+	let query = dns_query("a.example.com", 1).ok().unwrap();
+	assert_eq!(query[query.len() - 4..], [0, 1, 0, 1]);
+	let mut good = query.clone();
+	good[2] = 0x81;
+	good[7] = 1;
+	good.extend_from_slice(&[0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 9, 0, 4, 192, 0, 2, 1]);
+	assert_eq!(dns_parse_response(&good, &query).ok(), Some(Some(vec!["192.0.2.1".parse::<std::net::IpAddr>().unwrap()])));
+	// cut anywhere it does not panic and has no address
+	for len in 0..good.len() {
+	    assert!(dns_parse_response(&good[..len], &query).is_err(), "{len}");
+	}
+	let mut other_id = good.clone();
+	other_id[0] ^= 1;
+	assert!(dns_parse_response(&other_id, &query).is_err());
+	let mut query_back = good.clone();
+	query_back[2] = 1;
+	assert!(dns_parse_response(&query_back, &query).is_err());
+	let mut other_type = good.clone();
+	other_type[query.len() - 3] = 28;
+	assert!(dns_parse_response(&other_type, &query).is_err());
+	let mut upper = good.clone();
+	upper[13] = b'A';
+	assert!(dns_parse_response(&upper, &query).is_ok());
+	assert!(dns_query("a..example.com", 1).is_err());
+	assert!(dns_query(&"a".repeat(64), 1).is_err());
+	assert!(dns_query(&"a.".repeat(128), 1).is_err());
+	assert_eq!(dns_query("a.example.com.", 1).ok().unwrap()[2..], query[2..]);
+    }
+
+    #[test]
+    fn the_dns_server_of_the_profile_is_all_there_is() {
+	let (server, seen) = fake_dns_server(0, &[(1, &[192, 0, 2, 12])]);
+	let net = NetOpts { dns_server: Some(server), ..Default::default() };
+	assert_eq!(net_lookup("speed.example.com", &net, || panic!("asked the system")).ok().flatten(), "192.0.2.12:80".parse().ok());
+	assert_eq!(seen.lock().unwrap().iter().map(|s| s.1).collect::<Vec<_>>(), vec![1, 28]);
+	// no falling back to the system, and another try later
+	let (no_name, _) = fake_dns_server(3, &[]);
+	let net = NetOpts { dns_server: Some(no_name), ..Default::default() };
+	assert!(net_lookup("speed.example.com", &net, || panic!("asked the system")).is_err());
+	let (failing, seen) = fake_dns_server(2, &[]);
+	let net = NetOpts { dns_server: Some(failing), ..Default::default() };
+	assert!(net_lookup("speed.example.com", &net, || panic!("asked the system")).is_err());
+	assert!(net_lookup("speed.example.com", &net, || panic!("asked the system")).is_err());
+	assert_eq!(seen.lock().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn a_and_aaaa_are_asked_together_and_sorted_like_musl() {
+	const V6: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+	let (server, seen) = fake_dns_server(0, &[(1, &[127, 0, 0, 1]), (28, &V6)]);
+	let got = test_lookup("both.example.com", &net_with_dscp(12), || vec![server]);
+	assert_eq!(seen.lock().unwrap().iter().map(|s| s.1).collect::<Vec<_>>(), vec![1, 28]);
+	let has_ipv6 = std::net::UdpSocket::bind("[::1]:0").is_ok();
+	assert_eq!(got, (if has_ipv6 { "[::1]:80" } else { "127.0.0.1:80" }).parse().ok());
+    }
+
+    #[test]
+    fn sort_keys_are_those_of_rfc_6724() {
+	let ip = |a: &str| a.parse::<std::net::IpAddr>().unwrap();
+	let key = |dest: &str, source: Option<&str>| dns_sort_key(&ip(dest), source.map(ip));
+	let v4 = key("93.184.216.34", Some("192.168.1.2"));
+	// routable ipv6 before ipv4, ipv6 without a route after it
+	assert!(key("2606:2800:220:1::1", Some("2a00:1::2")) > v4);
+	assert!(key("2606:2800:220:1::1", None) < v4);
+	// the tunnels and unique local after ipv4
+	assert!(key("2001:0:1::1", Some("2a00:1::2")) < v4);
+	assert!(key("fd00::1", Some("fd00::2")) < v4);
+	// a source with a link local scope is not good for a global destination
+	assert!(key("2606:2800:220:1::1", Some("fe80::1")) < v4);
+	// the longer common prefix first
+	assert!(key("2a00:1::9", Some("2a00:1::2")) > key("2606:2800:220:1::1", Some("2a00:1::2")));
+	let mut only_v4 = vec![ip("192.0.2.2"), ip("192.0.2.1")];
+	dns_sort(&mut only_v4, &NetOpts::default());
+	assert_eq!(only_v4, vec![ip("192.0.2.2"), ip("192.0.2.1")]);
+    }
+
+    #[test]
+    fn dns_server_setting_takes_a_port_per_profile() {
+	let vars = |name: &str| match name {
+	    "SPEEDKETCHUP_DNS_SERVER" => Some("1.1.1.1,,[2001:4860:4860::8888]:5353,2001:4860:4860::8844,9.9.9.9:5353".to_string()),
+	    _ => None,
+	};
+	let mut config = default_config();
+	assert_eq!(config_from_vars(&mut config, &vars), Ok(()));
+	let servers: Vec<_> = config.profiles.iter().map(|p| p.net.dns_server.map(|a| a.to_string())).collect();
+	assert_eq!(servers, ["1.1.1.1:53", "", "[2001:4860:4860::8888]:5353", "[2001:4860:4860::8844]:53", "9.9.9.9:5353"].map(|a| (a != "").then(|| a.to_string())).to_vec());
+	let mut config = default_config();
+	assert!(config_from_vars(&mut config, &|name: &str| (name == "SPEEDKETCHUP_DNS_SERVER").then(|| "dns.example.com".to_string())).is_err());
+    }
+
+    #[test]
+    fn loopback_dns_servers_are_left_out() {
+	let servers = ["127.0.0.53", "::1", "0.0.0.0", "192.0.2.1", "2001:db8::1"].map(|a| a.parse().unwrap()).to_vec();
+	assert_eq!(dns_servers_usable(servers), vec!["192.0.2.1:53".parse::<std::net::SocketAddr>().unwrap(), "[2001:db8::1]:53".parse().unwrap()]);
     }
 }

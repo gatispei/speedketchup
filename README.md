@@ -102,6 +102,8 @@ usage: speedketchup [options]
 		windows: the Idx of 'netsh interface ipv4 show interfaces'
 	-sa|--src-addr &ltaddr&gt: source address to test from
 	-ds|--dscp &lt0-63&gt: dscp value of the test traffic, for the router to pick a wan by, not on windows
+	-dn|--dns-server &ltaddr[:port]&gt: dns server for the lookups of the test, asked the way the test goes
+		the servers of the system by default, the system resolver if they don't answer that way
 	-ao|--allow-overlapping-tests &ltyes|no&gt: run the tests of different profiles at the same time, no by default
 
 every option can also be given as an environment variable, command line options
@@ -112,12 +114,13 @@ take precedence:
 	SPEEDKETCHUP_UPLOAD_CONNECTIONS, SPEEDKETCHUP_INFLUX_URL,
 	SPEEDKETCHUP_INFLUX_TOKEN, SPEEDKETCHUP_MQTT, SPEEDKETCHUP_MQTT_USER,
 	SPEEDKETCHUP_MQTT_PASSWORD, SPEEDKETCHUP_NAME, SPEEDKETCHUP_INTERFACE,
-	SPEEDKETCHUP_SRC_ADDR, SPEEDKETCHUP_DSCP, SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS
+	SPEEDKETCHUP_SRC_ADDR, SPEEDKETCHUP_DSCP, SPEEDKETCHUP_DNS_SERVER,
+	SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS
 
 several test profiles, eg one for every wan, are given as comma separated values
-of the name, interval, server, duration, connections, interface, src-addr and dscp
-options, one for every profile. An empty one is the default, a single value is
-for all the profiles:
+of the name, interval, server, duration, connections, interface, src-addr, dscp
+and dns-server options, one for every profile. An empty one is the default, a
+single value is for all the profiles:
 	speedketchup -n wan1,wan2 -sa 192.0.2.1,198.51.100.1 -i 10,30
 </pre>
 
