@@ -241,10 +241,11 @@
 		  fill="#ddd"/>
 	    <circle cx="50" cy="50" r="4" fill="#ddd"/>
 	    <text text-anchor="middle" x="30" y="72" class="st">0</text>
-	    <text text-anchor="middle" x="24" y="42" class="st">1</text>
-	    <text text-anchor="middle" x="50" y="25" class="st">10</text>
-	    <text text-anchor="middle" x="72" y="42" class="st">100</text>
-	    <text text-anchor="middle" x="65" y="72" class="st">1000</text>
+	    <text text-anchor="middle" x="26" y="49" class="st">1M</text>
+	    <text text-anchor="middle" x="39" y="31" class="st">10M</text>
+	    <text text-anchor="middle" x="61" y="31" class="st">100M</text>
+	    <text text-anchor="middle" x="74" y="49" class="st">1G</text>
+	    <text text-anchor="middle" x="65" y="72" class="st">10G</text>
 	  </g>
 	  <path id="needle" d="M 45 50
 			       m -2 0
@@ -320,13 +321,13 @@
 	<use id="{p}upload_needle" x="110" y="0" href="#needle" fill="#00d" transform="rotate(-135, 155, 50)" style="visibility: hidden;"/>
 
 	<text text-anchor="middle" x="45" y="75" class="gt" fill="#d00" style="font-size: 15px; cursor: default;"><title>Download</title>▼</text>
-	<text text-anchor="middle" x="45" y="90" class="bt"><title>Download Speed Mbps</title><tspan id="{p}download_mbps"></tspan></text>
-	<text text-anchor="middle" x="70" y="90" class="st">Mbps</text>
+	<text text-anchor="middle" x="45" y="90" class="bt"><title>Download Speed</title><tspan id="{p}download_mbps"></tspan></text>
+	<text id="{p}download_unit" text-anchor="middle" x="70" y="90" class="st">Mbps</text>
 	<text text-anchor="middle" x="45" y="98" class="st"><title>Latency While Downloading</title><tspan id="{p}download_latency"></tspan></text>
 
 	<text text-anchor="middle" x="155" y="75" class="gt" fill="#00d" style="font-size: 15px; cursor: default;"><title>Upload</title>▲</text>
-	<text text-anchor="middle" x="155" y="90" class="bt"><title>Upload Speed Mbps</title><tspan id="{p}upload_mbps"></tspan></text>
-	<text text-anchor="middle" x="180" y="90" class="st">Mbps</text>
+	<text text-anchor="middle" x="155" y="90" class="bt"><title>Upload Speed</title><tspan id="{p}upload_mbps"></tspan></text>
+	<text id="{p}upload_unit" text-anchor="middle" x="180" y="90" class="st">Mbps</text>
 	<text text-anchor="middle" x="155" y="98" class="st"><title>Latency While Uploading</title><tspan id="{p}upload_latency"></tspan></text>
 
 	<g id="{p}start_button" class="button" style="cursor: pointer; visibility: hidden;" onclick="onClickStart({n})">
@@ -442,18 +443,18 @@ function debug(str) {
     }
 }
 
-// full gauge is 270 degrees, divided in 4 equal sections
+// full gauge is 270 degrees, divided in 5 equal sections
 // section 1: 0 - 1 Mbps, linear
-// section 2,3,4: 1 - 1000 Mbps, logaritmic
+// section 2,3,4,5: 1 Mbps - 10 Gbps, logaritmic
 function speed_to_gauge_degrees(mbps) {
     if (mbps < 1) {
-	return mbps * (270 / 4);
+	return mbps * (270 / 5);
     }
     var ret = Math.log10(mbps) + 1;
-    if (ret > 4) {
-	ret = 4;
+    if (ret > 5) {
+	ret = 5;
     }
-    return ret * (270 / 4);
+    return ret * (270 / 5);
 }
 function deg_to_rad(deg) {
     return deg * Math.PI / 180;
@@ -555,11 +556,13 @@ function gauge_set(i, p) {
 function set_speed_gauge(i, name, cx, mbps) {
     if (!mbps) {
 	gauge_el(i, name + "_mbps").textContent = "";
+	gauge_el(i, name + "_unit").textContent = "Mbps";
 	gauge_el(i, name + "_needle").style.visibility = "hidden";
 	gauge_el(i, name + "_speed_band_clip_path").setAttribute("d", "");
 	return;
     }
-    gauge_el(i, name + "_mbps").textContent = format3(mbps);
+    gauge_el(i, name + "_mbps").textContent = format3(mbps < 1000 ? mbps : mbps / 1000);
+    gauge_el(i, name + "_unit").textContent = mbps < 1000 ? "Mbps" : "Gbps";
     var deg = speed_to_gauge_degrees(mbps);
     gauge_el(i, name + "_needle").transform.baseVal[0].setRotate(-135 + deg, cx, 50);
     gauge_el(i, name + "_needle").style.visibility = "visible";
