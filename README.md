@@ -31,7 +31,7 @@ Prebuilt executables for some platforms:
 |linux mips|[658k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mips)|[250k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mips-upx)|
 |linux mipsel|[658k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mipsel)|[254k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mipsel-upx)|
 |windows x86_64|[556k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64.exe)|[261k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64-upx.exe)|[Microsoft Store](https://apps.microsoft.com/detail/9P0J5WV54WXH)|
-|macos app, universal (x86_64 + aarch64)|[765k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/SpeedKetchup-macos.zip)|||
+|macos app, universal (x86_64 + aarch64)|[765k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/SpeedKetchup-macos.zip)||[Mac App Store](https://apps.apple.com/app/id6826614854)|
 
 ### Builtin web server
 <picture>
