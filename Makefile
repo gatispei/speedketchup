@@ -100,13 +100,15 @@ APP_FILES      := bin/speedketchup-macos macos/Info.plist macos/SpeedKetchup.icn
 # Distribution certificate and the provisioning profile of TEAM_ID, in a pkg
 # signed with the Mac Installer Distribution certificate. mas-upload sends it
 # to App Store Connect with the API key ASC_KEY_ID of issuer ASC_ISSUER, its
-# AuthKey_<ASC_KEY_ID>.p8 in ~/.appstoreconnect/private_keys
+# AuthKey_<ASC_KEY_ID>.p8 in ~/.appstoreconnect/private_keys. ASC_APP_ID is
+# the Apple ID of the app, altool does not always find it by the bundle id
 TEAM_ID        ?=
 MAS_APP_ID     ?= Apple Distribution
 MAS_PKG_ID     ?= 3rd Party Mac Developer Installer
 MAS_PROFILE    ?= macos/SpeedKetchup.provisionprofile
 ASC_KEY_ID     ?=
 ASC_ISSUER     ?=
+ASC_APP_ID     ?= 6826614854
 
 # $(1) the bundle directory
 define make_bundle
@@ -147,8 +149,8 @@ bin/SpeedKetchup.pkg: $(APP_FILES) $(MAS_PROFILE)
 	productbuild --component bin/mas/SpeedKetchup.app /Applications --sign "$(MAS_PKG_ID)" $@
 
 mas-upload: bin/SpeedKetchup.pkg
-	xcrun altool --validate-app -f $< -t macos --apiKey $(ASC_KEY_ID) --apiIssuer $(ASC_ISSUER)
-	xcrun altool --upload-app -f $< -t macos --apiKey $(ASC_KEY_ID) --apiIssuer $(ASC_ISSUER)
+	xcrun altool --validate-app -f $< -t macos --apple-id $(ASC_APP_ID) --apiKey $(ASC_KEY_ID) --apiIssuer $(ASC_ISSUER)
+	xcrun altool --upload-app -f $< -t macos --apple-id $(ASC_APP_ID) --apiKey $(ASC_KEY_ID) --apiIssuer $(ASC_ISSUER)
 
 # Microsoft Store package, the identity comes from .env
 MSIX_IDENTITY       ?= SpeedKetchup
