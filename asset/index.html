@@ -146,6 +146,19 @@
       #results_table tbody tr:hover {
 	  background-color: #8882;
       }
+      #version {
+	  text-align: center;
+	  margin: 8px 0 12px;
+      }
+      #version a {
+	  color: inherit;
+	  opacity: 0.5;
+	  text-decoration: none;
+      }
+      #version a:hover {
+	  opacity: 1;
+	  text-decoration: underline;
+      }
       #time_interval {
 	  text-align: center;
 	  margin: 4px 0;
@@ -378,6 +391,7 @@
       <div id="results_table_caption"></div>
       <table id="results_table"><thead><tr></tr></thead><tbody></tbody></table>
     </div>
+    <div id="version"><a href="https://github.com/gatispei/speedketchup" target="_blank" rel="noopener">SpeedKetchup SPEEDKETCHUP_VERSION</a></div>
     <script type="text/javascript">
 function getHeight() {
     return Math.max(window.innerHeight / 2 - 200, 200);

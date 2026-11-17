@@ -251,7 +251,7 @@ unsafe fn add_item(menu: Id, title: &str, action: Option<Sel>, target: Id, key: 
 unsafe fn add_header(menu: Id, target: Id) {
     let item = add_item(menu, "", None, target, "");
     let font = msg![Id; objc_getClass(cs!("NSFont")), "boldSystemFontOfSize:", 0.0 => f64];
-    set_styled_title(item, "SpeedKetchup", font, msg![Id; objc_getClass(cs!("NSColor")), "labelColor"]);
+    set_styled_title(item, &format!("SpeedKetchup {PKG_VERSION}"), font, msg![Id; objc_getClass(cs!("NSColor")), "labelColor"]);
 }
 
 // a title in font and color, a disabled item keeps the color instead of

@@ -1,5 +1,6 @@
 // Minifies the inline scripts of asset/index.html with esbuild into OUT_DIR,
-// the page is embedded from there. Without esbuild the page goes in as is,
+// with SPEEDKETCHUP_VERSION in it replaced by the version of the package, the
+// page is embedded from there. Without esbuild the page goes in as is,
 // unless SPEEDKETCHUP_MINIFY=1 asks for it, as the release builds do. ESBUILD
 // is the command to run, esbuild by default.
 
@@ -47,10 +48,12 @@ fn minify_scripts(html: &str, esbuild: &str) -> Result<String, String> {
 
 fn main() {
     println!("cargo:rerun-if-changed=asset/index.html");
+    println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=ESBUILD");
     println!("cargo:rerun-if-env-changed=SPEEDKETCHUP_MINIFY");
 
-    let html = std::fs::read_to_string("asset/index.html").expect("cannot read asset/index.html");
+    let html = std::fs::read_to_string("asset/index.html").expect("cannot read asset/index.html")
+	.replace("SPEEDKETCHUP_VERSION", env!("CARGO_PKG_VERSION"));
     let esbuild = std::env::var("ESBUILD").unwrap_or("esbuild".to_string());
     let required = std::env::var("SPEEDKETCHUP_MINIFY").as_deref() == Ok("1");
     let page = match minify_scripts(&html, &esbuild) {

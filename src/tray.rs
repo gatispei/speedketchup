@@ -664,7 +664,7 @@ fn show_menu(hwnd: Handle, x: i32, y: i32) {
 	let menu = CreatePopupMenu();
 	let add = |flags: u32, id: usize, text: &str| AppendMenuW(menu, flags, id, wide(text).as_ptr());
 	// the default item is bold
-	add(MF_STRING | MF_GRAYED, ID_HEADER, "SpeedKetchup");
+	add(MF_STRING | MF_GRAYED, ID_HEADER, &format!("SpeedKetchup {PKG_VERSION}"));
 	SetMenuDefaultItem(menu, ID_HEADER as u32, 0);
 	AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
 	for (i, line) in lines.iter().enumerate() {
