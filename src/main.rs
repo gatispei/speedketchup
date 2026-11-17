@@ -1143,7 +1143,7 @@ Connection: close\r
     while bytes_written < req.as_bytes().len() {
 	wait_socket(&tcp_stream, timeout, WaitSocketOp::Write)
 	    .map_err(|e| format!("http_request: wait_socket to send request {e}"))?;
-	bytes_written += match std::io::Write::write(&mut tcp_stream, req.as_bytes()) {
+	bytes_written += match std::io::Write::write(&mut tcp_stream, &req.as_bytes()[bytes_written..]) {
 	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => 0,
 	    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
 	    Err(err) => return Err(format!("http_request: send request: {err}").into()),
@@ -1296,7 +1296,7 @@ fn http_body(resp: &[u8]) -> Result<Vec<u8>, ErrorString> {
 	    break;
 	}
 	body = &body[memmem(body, b"\r\n").ok_or("no chunk start")? + 2..];
-	if chunk_size + 2 > body.len() {
+	if chunk_size.saturating_add(2) > body.len() {
 	    return Err("chunk size too big".into());
 	}
 	body_str.extend_from_slice(&body[0..chunk_size]);
@@ -1388,6 +1388,14 @@ fn http_get_follow_redirects(host: &str, net: &NetOpts, path: &str) -> Result<Ve
 	pr!("follow redirect to {h} {p}");
     }
     Err(format!("more than {MAX_REDIRECTS} redirects for {host}{path}").into())
+}
+
+fn upload_sizes(ratio: usize) -> Result<Vec<u32>, ErrorString> {
+    let sizes = [32768_u32, 65536, 131072, 262144, 524288, 1048576, 7340032];
+    match ratio.checked_sub(1).and_then(|r| sizes.get(r..)) {
+	Some(s) if !s.is_empty() => Ok(s.to_vec()),
+	_ => Err(format!("bad upload ratio {ratio}").into()),
+    }
 }
 
 fn test_download(host_str: &str, net: &NetOpts, duration: Duration, sizes: &Vec<u32>, progress: &Arc<AtomicUsize>) -> Result<usize, ErrorString> {
@@ -1606,8 +1614,7 @@ fn speedtest(cfg: &TestProfile, idx: usize, state: &Arc<Mutex<SpeedTestState>>) 
 //        .ok_or("no maxchunkcount")?
 //        .parse::<u32>()?;
 
-    let upload_sizes = vec![32768_u32, 65536, 131072, 262144, 524288, 1048576, 7340032];
-    let upload_sizes = upload_sizes.get(ratio - 1..).ok_or("bad upsize")?.to_vec();
+    let upload_sizes = upload_sizes(ratio)?;
     let download_sizes = vec![350_u32, 500, 750, 1000, 1500, 2000, 2500, 3000, 3500, 4000];
 
 //    let size_count = upload_sizes.len();
@@ -1681,7 +1688,7 @@ fn speedtest(cfg: &TestProfile, idx: usize, state: &Arc<Mutex<SpeedTestState>>) 
 		pr!("servers_xml {:#?}", servers_xml);
 	    }
 	    servers.sort_by(|a, b| {
-		a.distance.partial_cmp(&b.distance).unwrap()
+		a.distance.total_cmp(&b.distance)
 	    });
 	},
 	Some(x) => {
@@ -2691,7 +2698,7 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 	    }
 	}
 	if hdrend_off == 0 {
-	    if let Some(off) = memmem(&buf[0..bytes_read], b"\r\n\r\n") {
+	    if let Some(off) = memmem(&buf[0..bytes_read.min(buf.len())], b"\r\n\r\n") {
 		hdrend_off = off;
 		let hdr = &buf[0..hdrend_off + 2];
 //		pr!("request: {}", std::str::from_utf8(hdr).unwrap());
@@ -2706,8 +2713,11 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 		});
 		hdrend_off += 4;
 	    }
+	    else if bytes_read >= buf.len() {
+		return Err("request header too long".into());
+	    }
 	}
-	if hdrend_off != 0 && bytes_read >= hdrend_off + content_length {
+	if hdrend_off != 0 && bytes_read >= hdrend_off.saturating_add(content_length) {
 	    let hdr = &buf[0..hdrend_off];
 	    let content = &buf[hdrend_off..std::cmp::min(hdrend_off + content_length, buf.len())];
 	    let mut iter = hdr.split(|c| *c == b' ');
@@ -2895,6 +2905,7 @@ fn var_num<T: std::str::FromStr>(var: &dyn Fn(&str) -> Option<String>, name: &st
 }
 
 const MAX_PROFILES: usize = 16;
+const MAX_INTERVAL: u64 = 60 * 24 * 366;
 
 // the comma separated values of a setting, one for every profile, a single
 // value is for all of them, an empty one or a setting not set is the default
@@ -2965,7 +2976,12 @@ fn config_from_vars(config: &mut SpeedTestConfig, var: &dyn Fn(&str) -> Option<S
 	}
     };
     set("SPEEDKETCHUP_NAME", &|p, v| { p.name = v.to_string(); Ok(()) });
-    set("SPEEDKETCHUP_INTERVAL", &|p, v| { p.test_interval = parse_value("SPEEDKETCHUP_INTERVAL", v)?; Ok(()) });
+    set("SPEEDKETCHUP_INTERVAL", &|p, v| {
+	match parse_value("SPEEDKETCHUP_INTERVAL", v)? {
+	    x if x > MAX_INTERVAL => Err(format!("bad SPEEDKETCHUP_INTERVAL value '{v}', it is at most {MAX_INTERVAL} minutes")),
+	    x => { p.test_interval = x; Ok(()) },
+	}
+    });
     set("SPEEDKETCHUP_SERVER", &|p, v| { p.server_host = Some(server_with_port(v)); Ok(()) });
     set("SPEEDKETCHUP_DOWNLOAD_DURATION", &|p, v| { p.download_duration = parse_value("SPEEDKETCHUP_DOWNLOAD_DURATION", v)?; Ok(()) });
     set("SPEEDKETCHUP_UPLOAD_DURATION", &|p, v| { p.upload_duration = parse_value("SPEEDKETCHUP_UPLOAD_DURATION", v)?; Ok(()) });
@@ -3621,6 +3637,47 @@ mod tests {
 	    assert_eq!(state.profiles[0].gauge_download_mbps, Some(500.0), "pad {pad}");
 	}
 	let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // what a client sends ends its connection, not the program
+    #[test]
+    fn bad_requests_end_the_connection() {
+	let (c, _) = config(&[]);
+	let state = test_state(c);
+	for request in [
+	    format!("GET / HTTP/1.1\r\nX: {}", "a".repeat(20000)),
+	    "POST /status HTTP/1.1\r\nContent-Length: 18446744073709551615\r\n\r\n".to_string(),
+	    "POST /status HTTP/1.1\r\nContent-Length: 18446744073709551612\r\n\r\n".to_string(),
+	] {
+	    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+	    let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+	    let (stream, _) = listener.accept().unwrap();
+	    let s = state.clone();
+	    let server = std::thread::spawn(move || server_connection(stream, &s, mpsc::channel().1));
+	    let _ = std::io::Write::write_all(&mut client, request.as_bytes());
+	    drop(client);
+	    assert!(server.join().unwrap().is_err());
+	}
+    }
+
+    #[test]
+    fn chunk_sizes_that_overflow_are_errors() {
+	let resp = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffff\r\nab\r\n0\r\n\r\n";
+	assert!(http_body(resp).is_err());
+    }
+
+    #[test]
+    fn upload_ratios_out_of_range_are_errors() {
+	assert_eq!(upload_sizes(1).ok().map(|s| s.len()), Some(7));
+	assert_eq!(upload_sizes(7).ok(), Some(vec![7340032]));
+	assert!(upload_sizes(0).is_err());
+	assert!(upload_sizes(8).is_err());
+    }
+
+    #[test]
+    fn intervals_too_long_are_errors() {
+	assert!(config(&[("SPEEDKETCHUP_INTERVAL", "527040")]).1.is_ok());
+	assert!(config(&[("SPEEDKETCHUP_INTERVAL", "527041")]).1.is_err());
     }
 
     #[test]
