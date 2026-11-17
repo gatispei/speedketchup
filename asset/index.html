@@ -19,26 +19,35 @@
 	  display: flex;
 	  flex-wrap: wrap;
 	  justify-content: center;
+	  filter: drop-shadow(8px 8px 8px #0008);
+	  clip-path: inset(0);
       }
       #dashboard svg {
-	  flex: none;
+	  display: block;
+	  width: 100%;
+	  height: auto;
+	  overflow: visible;
       }
       .gauge {
 	  display: flex;
 	  flex-direction: column;
 	  align-items: center;
+	  position: relative;
+	  container-type: inline-size;
+	  flex: none;
+	  width: min(100vw - 32px, 495px);
       }
       .gauge_name {
-	  font-size: 16px;
+	  position: absolute;
+	  bottom: 0;
+	  z-index: 1;
+	  font-size: 3.4cqw;
+	  line-height: 4.8cqw;
 	  font-weight: bold;
-	  margin-top: 2px;
 	  cursor: pointer;
       }
       .gauge_name.dimmed {
 	  opacity: 0.4;
-      }
-      .gauge_name:empty {
-	  display: none;
       }
       .dash_outline {
 	  fill: #fff;
@@ -239,11 +248,6 @@
 	  }
 	</style>
 	<defs>
-	  <filter id="f3">
-	    <feOffset result="offOut" in="SourceAlpha" dx="10" dy="10" />
-	    <feGaussianBlur result="blurOut" in="offOut" stdDeviation="10" />
-	    <feBlend in="SourceGraphic" in2="blurOut" mode="normal" />
-	  </filter>
 	  <g id="spd">
 	    <path id="progress_band_bg" d="M 50 50
 		     m -28 28
@@ -273,17 +277,19 @@
     <!-- a gauge for every profile, {p} tells apart their ids, {n} is the number of the profile -->
     <template id="gauge_template">
       <div class="gauge">
-      <svg viewBox="-105 0 410 100" xmlns="http://www.w3.org/2000/svg" height="150px">
-	<path d="M -55 101
-		 v -1
+      <svg viewBox="-65 0 330 116" xmlns="http://www.w3.org/2000/svg">
+	<path d="M -3000 117
+		 V 100
+		 H -55
 		 a 50 50 0 0 0 50 -50
 		 a 50 50 0 0 1 50 -50
 		 h 110
 		 a 50 50 0 0 1 50 50
 		 a 50 50 0 0 0 50 50
-		 v 1
+		 H 3000
+		 V 117
 		 z"
-	      class="dash_outline" filter="url(#f3)" transform="translate(0, 1)" />
+	      class="dash_outline" />
 
 	<clipPath id="{p}clip_dpb">
 	  <path id="{p}download_progress_band_clip_path" d=""/>
@@ -504,6 +510,8 @@ function build_gauges(profiles) {
 	el("dashboard").insertAdjacentHTML("beforeend", html.replaceAll("{p}", "p" + i + "_").replaceAll("{n}", i + 1));
 	if (profiles.length > 1) {
 	    gauge_el(i, "name").textContent = p.name;
+	} else {
+	    gauge_el(i, "name").previousElementSibling.setAttribute("viewBox", "-65 0 330 101");
 	}
     });
 }
