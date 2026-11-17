@@ -510,11 +510,14 @@ fn timestr_millis() -> String {
 }
 
 fn parse_timestr(str: &str) -> Result<u32, ErrorString> {
-    let mut i = str.split("-");
-    let date: Vec<_> = i.next().ok_or("no date")?.split(".").collect();
-    let time: Vec<_> = i.next().ok_or("no time")?.split(":").collect();
+    let (date, time) = str.split_once('-').ok_or("no time")?;
+    let date: Vec<_> = date.split('.').collect();
+    let time: Vec<_> = time.split(':').collect();
+    if date.len() != 3 || time.len() != 3 {
+	return Err("bad time".into());
+    }
 
-    let x = unsafe {
+    let t = unsafe {
 	let mut tm: libc::tm = std::mem::zeroed();
 	tm.tm_year = date[0].parse()?;
 	tm.tm_year -= 1900;
@@ -528,10 +531,9 @@ fn parse_timestr(str: &str) -> Result<u32, ErrorString> {
         let t = libc::timegm(&mut tm);
         #[cfg(windows)]
         let t = c::_mkgmtime(&tm);
-	t as u32
+	t
     };
-
-    Ok(x)
+    Ok(u32::try_from(t).map_err(|_| "bad time")?)
 }
 
 // a thread working for this one, in the log with its name first
@@ -2225,12 +2227,18 @@ fn restore_last_tests(state: &Arc<Mutex<SpeedTestState>>, first: usize) {
     // the end of the file is enough, it can hold years of results. A profile
     // tested far less often than the others can miss it and test right away
     let mut tail = vec!();
+    let mut start = 0;
     if let Ok(mut f) = std::fs::File::open(&filename) {
 	let size = f.metadata().map(|m| m.len()).unwrap_or(0);
-	let _ = std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(size.saturating_sub(64 * 1024)));
+	start = size.saturating_sub(64 * 1024);
+	let _ = std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(start));
 	let _ = std::io::Read::read_to_end(&mut f, &mut tail);
     }
     let tail = String::from_utf8_lossy(&tail);
+    let tail = match start {
+	0 => &tail[..],
+	_ => tail.split_once('\n').map(|(_, rest)| rest).unwrap_or(""),
+    };
     let measured = |r: &SpeedTestResult| r.latency_idle.is_some() || r.download.is_some() || r.upload.is_some();
     let mut times = vec![None; count];
     let mut errors = vec![None; count];
@@ -3560,15 +3568,7 @@ mod tests {
 	let (mut c, r) = config(&[("SPEEDKETCHUP_NAME", "a,b,c")]);
 	assert!(r.is_ok());
 	c.store_filename = file.to_str().unwrap().to_string();
-	let state = Arc::new(Mutex::new(SpeedTestState {
-	    profiles: c.profiles.iter().map(|_| ProfileState::new()).collect(),
-	    config: c,
-	    running_tests: 0,
-	    to_conn_senders: HashMap::new(),
-	    to_main_sender: mpsc::channel().0,
-	    server_id: 0,
-	    serving: None,
-	}));
+	let state = test_state(c);
 	restore_last_tests(&state, 0);
 	let state = state.lock().unwrap();
 	let p = &state.profiles;
@@ -3579,6 +3579,47 @@ mod tests {
 	// the last test of this one failed, the older result is not its gauges
 	assert_eq!(p[2].gauge_download_mbps, None);
 	assert!(p[2].last_result.is_some());
+	let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn test_state(c: SpeedTestConfig) -> Arc<Mutex<SpeedTestState>> {
+	Arc::new(Mutex::new(SpeedTestState {
+	    profiles: c.profiles.iter().map(|_| ProfileState::new()).collect(),
+	    config: c,
+	    running_tests: 0,
+	    to_conn_senders: HashMap::new(),
+	    to_main_sender: mpsc::channel().0,
+	    server_id: 0,
+	    serving: None,
+	}))
+    }
+
+    #[test]
+    fn times_that_are_cut_or_broken_do_not_parse() {
+	assert_eq!(parse_timestr("2026.10.29-11:52:48").ok(), Some(1793274768));
+	for bad in ["29-11:52:48", "10.29-11:52:48", "2026.10.29-11:52", "2026.10.29", "", "-", "a.b.c-d:e:f", "2026.10.29-11:52:48:00"] {
+	    assert!(parse_timestr(bad).is_err(), "{bad}");
+	}
+    }
+
+    // the end of a big file is read from the middle of a line, wherever it falls
+    #[test]
+    fn restart_reads_the_end_of_a_big_file_from_anywhere() {
+	let dir = std::env::temp_dir().join(format!("speedketchup-test-tail-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).unwrap();
+	let file = dir.join("results.csv");
+	let line = "2026.10.29-11:52:48,7.92,7.50,33.2,449,592,198.51.100.9,\"Example ISP\",\"Host/City, ST/US\",speedtest.example.net:8080,,1\n";
+	let lines = line.repeat(64 * 1024 / line.len() + 2);
+	for pad in 0..=line.len() {
+	    std::fs::write(&file, format!("{}\n{}{lines}2026.11.17-10:10:00,8,8,8,500,600,198.51.100.9,isp,s,h:8080,,1\n", CSV_COLS.trim_end(), "x".repeat(pad))).unwrap();
+	    let (mut c, _) = config(&[]);
+	    c.store_filename = file.to_str().unwrap().to_string();
+	    let state = test_state(c);
+	    restore_last_tests(&state, 0);
+	    let state = state.lock().unwrap();
+	    assert_eq!(state.profiles[0].last_test_time, Some(1794910200), "pad {pad}");
+	    assert_eq!(state.profiles[0].gauge_download_mbps, Some(500.0), "pad {pad}");
+	}
 	let _ = std::fs::remove_dir_all(dir);
     }
 
