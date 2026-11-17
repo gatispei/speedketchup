@@ -53,6 +53,7 @@ Defaults are the values the container image ships with.
 |`SPEEDKETCHUP_DSCP`||dscp value 0-63 of the test traffic, for the router to pick a wan by|
 |`SPEEDKETCHUP_DNS_SERVER`||dns server addr[:port] for the lookups of the test, asked the way the test goes|
 |`SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS`|`no`|run the tests of different profiles at the same time|
+|`SPEEDKETCHUP_SINGLE_TEST`|`no`|test every profile once and exit, without the web server, exit code 1 if a test failed, eg with `docker run --rm`|
 
 Several test profiles, eg one for every wan of a dual-wan router, are given as
 comma separated values of the name, interval, server, duration, connections,

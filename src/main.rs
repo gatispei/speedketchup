@@ -180,6 +180,7 @@ struct TestProfile {
 struct SpeedTestConfig {
     profiles: Vec<TestProfile>,
     allow_overlapping_tests: bool,
+    single_test: bool,
 
     store_filename: String,
     listen_port: u16,
@@ -2856,6 +2857,7 @@ const HELP: &str = "usage: speedketchup [options]
 	-dn|--dns-server <addr[:port]>: dns server for the lookups of the test, asked the way the test goes
 		the servers of the system by default, the system resolver if they don't answer that way
 	-ao|--allow-overlapping-tests <yes|no>: run the tests of different profiles at the same time, no by default
+	-st|--single-test: test every profile once right away and exit, without the web server, 1 if a test failed
 	--tray: windows only, run as the tray icon, as when started from the start menu
 
 every option can also be given as an environment variable, command line options
@@ -2867,7 +2869,7 @@ take precedence:
 	SPEEDKETCHUP_INFLUX_TOKEN, SPEEDKETCHUP_MQTT, SPEEDKETCHUP_MQTT_USER,
 	SPEEDKETCHUP_MQTT_PASSWORD, SPEEDKETCHUP_NAME, SPEEDKETCHUP_INTERFACE,
 	SPEEDKETCHUP_SRC_ADDR, SPEEDKETCHUP_DSCP, SPEEDKETCHUP_DNS_SERVER,
-	SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS
+	SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS, SPEEDKETCHUP_SINGLE_TEST (yes or no)
 
 several test profiles, eg one for every wan, are given as comma separated values
 of the name, interval, server, duration, connections, interface, src-addr, dscp
@@ -2947,11 +2949,14 @@ fn config_from_vars(config: &mut SpeedTestConfig, var: &dyn Fn(&str) -> Option<S
     if let Some(x) = var_str(var, "SPEEDKETCHUP_MQTT") { config.mqtt_host = Some(mqtt_with_port(&x)); }
     if let Some(x) = var_str(var, "SPEEDKETCHUP_MQTT_USER") { config.mqtt_user = Some(x); }
     if let Some(x) = var_str(var, "SPEEDKETCHUP_MQTT_PASSWORD") { config.mqtt_password = Some(x); }
-    if let Some(x) = var_str(var, "SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS") {
-	match x.to_ascii_lowercase().as_str() {
-	    "yes" | "true" | "on" | "1" => config.allow_overlapping_tests = true,
-	    "no" | "false" | "off" | "0" => config.allow_overlapping_tests = false,
-	    _ => { error.get_or_insert(format!("bad SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS value '{x}'")); },
+    for (name, value) in [("SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS", &mut config.allow_overlapping_tests),
+			  ("SPEEDKETCHUP_SINGLE_TEST", &mut config.single_test)] {
+	if let Some(x) = var_str(var, name) {
+	    match x.to_ascii_lowercase().as_str() {
+		"yes" | "true" | "on" | "1" => *value = true,
+		"no" | "false" | "off" | "0" => *value = false,
+		_ => { error.get_or_insert(format!("bad {name} value '{x}'")); },
+	    }
 	}
     }
 
@@ -3061,6 +3066,7 @@ fn parse_args() {
 	    // the process serial number older macOS passes to apps opened in the Finder
 	    x if x.starts_with("-psn_") => (),
 	    "--login" | "--tray" if cfg!(windows) => (),
+	    "-st" | "--single-test" => vars.push(("SPEEDKETCHUP_SINGLE_TEST".to_string(), "yes".to_string())),
 	    x => match OPTIONS.iter().find(|(short, long, _)| x == *short || x == *long) {
 		Some((_, _, name)) => match it.next() {
 		    Some(value) => vars.push((name.to_string(), value)),
@@ -3096,6 +3102,7 @@ fn default_config() -> SpeedTestConfig {
 	    net: NetOpts::default(),
 	}],
 	allow_overlapping_tests: false,
+	single_test: false,
 	store_filename: "speedketchup-results.csv".to_string(),
 	listen_port: 8288,
 	listen_address: "127.0.0.1".to_string(),
@@ -3196,6 +3203,7 @@ fn main() {
 	    exit(&e, -1);
 	}
     }
+    config.single_test &= !app;
 
     std::env::set_var("RUST_BACKTRACE", "1");
     println!("speedketchup parameters (run with '-h' to see options):");
@@ -3248,7 +3256,7 @@ fn main() {
     let at_login = app && std::env::var_os("SPEEDKETCHUP_LOGIN").is_some();
 #[cfg(windows)]
     let at_login = app && (at_login || ui::at_login());
-    let listener = match std::net::TcpListener::bind((config.listen_address.as_str(), config.listen_port)) {
+    let listener = if config.single_test { None } else { match std::net::TcpListener::bind((config.listen_address.as_str(), config.listen_port)) {
 	// the app is running already, show its page instead
 	Err(_) if app && is_speedketchup(config.listen_port) => {
 	    if !at_login {
@@ -3264,13 +3272,19 @@ fn main() {
 	},
 	Err(e) => exit(&format!("could not bind {}:{}: {}", config.listen_address, config.listen_port, e), -1),
 	Ok(l) => Some(l)
-    };
-    // the app opens it once it has started, and knows if that was at login
-    if !app {
-	open_url(sk_url);
+    }};
+    if config.single_test {
+	println!("{ATTR_GREEN}single test: {ATTR_BOLD}yes{ATTR_RESET}");
     }
-    println!("speedketchup is at {ATTR_BOLD}{sk_url}{ATTR_RESET}");
+    else {
+	// the app opens it once it has started, and knows if that was at login
+	if !app {
+	    open_url(sk_url);
+	}
+	println!("speedketchup is at {ATTR_BOLD}{sk_url}{ATTR_RESET}");
+    }
 
+    let single_test = config.single_test;
     let (tx, rx) = mpsc::channel();
     let state = Arc::new(Mutex::new(SpeedTestState {
 	profiles: config.profiles.iter().map(|_| ProfileState::new()).collect(),
@@ -3282,7 +3296,9 @@ fn main() {
 	serving: None,
     }));
 
-    restore_last_tests(&state, 0);
+    if !single_test {
+	restore_last_tests(&state, 0);
+    }
     if let Some(listener) = listener {
 	start_server(listener, &state);
     }
@@ -3443,6 +3459,9 @@ fn test_loop(state: Arc<Mutex<SpeedTestState>>, rx: mpsc::Receiver<()>) -> ! {
 	    wait = queue_due_tests(&mut locked);
 	    start_queued_tests(&state, &mut locked);
 	    notify_connections(&locked);
+	    if locked.config.single_test && locked.running_tests == 0 && locked.profiles.iter().all(|p| p.tests_total > 0) {
+		std::process::exit(if locked.profiles.iter().any(|p| p.last_error.is_some()) { 1 } else { 0 });
+	    }
 	}
 	if let Some(dur) = wait {
 	    pr!("sleep for {:?}", dur);
@@ -3672,6 +3691,14 @@ mod tests {
 	assert_eq!(upload_sizes(7).ok(), Some(vec![7340032]));
 	assert!(upload_sizes(0).is_err());
 	assert!(upload_sizes(8).is_err());
+    }
+
+    #[test]
+    fn single_test_is_yes_or_no() {
+	assert!(!config(&[]).0.single_test);
+	assert!(config(&[("SPEEDKETCHUP_SINGLE_TEST", "yes")]).0.single_test);
+	assert!(!config(&[("SPEEDKETCHUP_SINGLE_TEST", "no")]).0.single_test);
+	assert!(config(&[("SPEEDKETCHUP_SINGLE_TEST", "maybe")]).1.is_err());
     }
 
     #[test]
