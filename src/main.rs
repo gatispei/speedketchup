@@ -3250,7 +3250,12 @@ fn main() {
 	println!("{ATTR_GREEN}mqtt: {ATTR_BOLD}{host}{}{ATTR_RESET}",
 		 match &config.mqtt_user { None => String::new(), Some(u) => format!(", as {u}") });
     }
-    let sk_url = &format!("http://127.0.0.1:{}", config.listen_port);
+    let sk_host = match config.listen_address.parse::<std::net::IpAddr>() {
+	Ok(a) if a.is_unspecified() => "127.0.0.1".to_string(),
+	Ok(std::net::IpAddr::V6(a)) => format!("[{a}]"),
+	_ => config.listen_address.clone(),
+    };
+    let sk_url = &format!("http://{sk_host}:{}", config.listen_port);
 
     // started at login by SpeedKetchup.app, nobody is waiting for the page
     let at_login = app && std::env::var_os("SPEEDKETCHUP_LOGIN").is_some();
