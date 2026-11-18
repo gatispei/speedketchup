@@ -49,6 +49,26 @@
       .gauge_name.dimmed {
 	  opacity: 0.4;
       }
+      .side, .graph, .graph_hides {
+	  transition: opacity .7s ease, transform .7s cubic-bezier(.3, 1.4, .5, 1);
+	  transform-box: fill-box;
+	  transform-origin: center;
+      }
+      .graph {
+	  opacity: 0;
+	  pointer-events: none;
+      }
+      .graphing_download .graph_download, .graphing_upload .graph_upload {
+	  opacity: 1;
+      }
+      .graphing_download .side_upload, .graphing_upload .side_download {
+	  opacity: 0;
+	  transform: scale(.82);
+      }
+      .graphing_download .graph_hides, .graphing_upload .graph_hides {
+	  opacity: 0;
+	  transform: scale(.5);
+      }
       .dash_outline {
 	  fill: #fff;
       }
@@ -264,6 +284,9 @@
 	    <text text-anchor="middle" x="74" y="49" class="st">1G</text>
 	    <text text-anchor="middle" x="65" y="72" class="st">10G</text>
 	  </g>
+	  <filter id="graph_blur" x="-20%" y="-20%" width="140%" height="140%">
+	    <feGaussianBlur stdDeviation="1.6"/>
+	  </filter>
 	  <path id="needle" d="M 45 50
 			       m -2 0
 			       a 2 2 1 1 0 4 0
@@ -291,6 +314,9 @@
 		 z"
 	      class="dash_outline" />
 
+	<clipPath id="{p}clip_panel">
+	  <path d="M -3000 117 V 100 H -55 a 50 50 0 0 0 50 -50 a 50 50 0 0 1 50 -50 h 110 a 50 50 0 0 1 50 50 a 50 50 0 0 0 50 50 H 3000 V 117 z"/>
+	</clipPath>
 	<clipPath id="{p}clip_dpb">
 	  <path id="{p}download_progress_band_clip_path" d=""/>
 	</clipPath>
@@ -304,6 +330,7 @@
 	  <path id="{p}upload_speed_band_clip_path" d=""/>
 	</clipPath>
 
+	<g class="side side_download">
 	<path class="download_progress_band" d="M 45 50
 		 m -28 28
 		 a 40 40 1 1 1 56 0
@@ -311,16 +338,7 @@
 		 a 43 43 1 1 0 -60 0
 		 z"
 	      fill="#ccc" clip-path="url(#{p}clip_dpb)"/>
-	<path class="upload_progress_band" d="M 155 50
-		 m -28 28
-		 a 40 40 1 1 1 56 0
-		 l 2 2
-		 a 43 43 1 1 0 -60 0
-		 z"
-	      fill="#ccc" clip-path="url(#{p}clip_upb)"/>
-
 	<use x="-5" y="0" href="#spd"/>
-	<use x="105" y="0" href="#spd"/>
 	<path class="download_speed_band" d="M 45 50
 		     m -28 28
 		     a 40 40 1 1 1 56 0
@@ -328,6 +346,21 @@
 		     a 32 32 1 1 0 -44 0
 		     z"
 		  fill="#fdd" clip-path="url(#{p}clip_dsb)"/>
+	<text text-anchor="middle" x="45" y="75" class="gt" fill="#d00" style="font-size: 15px; cursor: default;"><title>Download</title>▼</text>
+	<text text-anchor="middle" x="45" y="90" class="bt"><title>Download Speed</title><tspan id="{p}download_mbps"></tspan></text>
+	<text id="{p}download_unit" text-anchor="middle" x="70" y="90" class="st">Mbps</text>
+	<text text-anchor="middle" x="45" y="98" class="st"><title>Latency While Downloading</title><tspan id="{p}download_latency"></tspan></text>
+	<use id="{p}download_needle" x="0" y="0" href="#needle" fill="#d00" transform="rotate(-135, 45, 50)" style="visibility: hidden;"/>
+	</g>
+	<g class="side side_upload">
+	<path class="upload_progress_band" d="M 155 50
+		 m -28 28
+		 a 40 40 1 1 1 56 0
+		 l 2 2
+		 a 43 43 1 1 0 -60 0
+		 z"
+	      fill="#ccc" clip-path="url(#{p}clip_upb)"/>
+	<use x="105" y="0" href="#spd"/>
 	<path class="upload_speed_band" d="M 155 50
 		     m -28 28
 		     a 40 40 1 1 1 56 0
@@ -335,26 +368,60 @@
 		     a 32 32 1 1 0 -44 0
 		     z"
 		  fill="#ddf" clip-path="url(#{p}clip_usb)"/>
-
-	<use id="{p}download_needle" x="0" y="0" href="#needle" fill="#d00" transform="rotate(-135, 45, 50)" style="visibility: hidden;"/>
-	<use id="{p}upload_needle" x="110" y="0" href="#needle" fill="#00d" transform="rotate(-135, 155, 50)" style="visibility: hidden;"/>
-
-	<text text-anchor="middle" x="45" y="75" class="gt" fill="#d00" style="font-size: 15px; cursor: default;"><title>Download</title>▼</text>
-	<text text-anchor="middle" x="45" y="90" class="bt"><title>Download Speed</title><tspan id="{p}download_mbps"></tspan></text>
-	<text id="{p}download_unit" text-anchor="middle" x="70" y="90" class="st">Mbps</text>
-	<text text-anchor="middle" x="45" y="98" class="st"><title>Latency While Downloading</title><tspan id="{p}download_latency"></tspan></text>
-
 	<text text-anchor="middle" x="155" y="75" class="gt" fill="#00d" style="font-size: 15px; cursor: default;"><title>Upload</title>▲</text>
 	<text text-anchor="middle" x="155" y="90" class="bt"><title>Upload Speed</title><tspan id="{p}upload_mbps"></tspan></text>
 	<text id="{p}upload_unit" text-anchor="middle" x="180" y="90" class="st">Mbps</text>
 	<text text-anchor="middle" x="155" y="98" class="st"><title>Latency While Uploading</title><tspan id="{p}upload_latency"></tspan></text>
-
+	<use id="{p}upload_needle" x="110" y="0" href="#needle" fill="#00d" transform="rotate(-135, 155, 50)" style="visibility: hidden;"/>
+	</g>
+	<g class="graph graph_download" clip-path="url(#{p}clip_panel)">
+	  <linearGradient id="{p}download_fade" gradientUnits="userSpaceOnUse" x1="100" y1="0" x2="212" y2="0">
+	    <stop offset="0" stop-color="#fff"/>
+	    <stop offset="0.6" stop-color="#fff" stop-opacity="0.85"/>
+	    <stop offset="1" stop-color="#fff" stop-opacity="0.35"/>
+	  </linearGradient>
+	  <linearGradient id="{p}download_areafill" x1="0" y1="0" x2="0" y2="1">
+	    <stop offset="0" stop-color="#d00" stop-opacity="0.28"/>
+	    <stop offset="1" stop-color="#d00" stop-opacity="0"/>
+	  </linearGradient>
+	  <mask id="{p}download_mask" maskUnits="userSpaceOnUse" x="-65" y="0" width="330" height="117">
+	    <rect x="-65" y="0" width="330" height="117" fill="url(#{p}download_fade)"/>
+	  </mask>
+	  <g mask="url(#{p}download_mask)">
+	    <path id="{p}download_area" d="" fill="url(#{p}download_areafill)"/>
+	    <path id="{p}download_glow" d="" fill="none" stroke="#d00" stroke-width="3.2" stroke-opacity="0.25" stroke-linecap="round" stroke-linejoin="round" filter="url(#graph_blur)"/>
+	    <path id="{p}download_glow_bridge" d="" fill="#d00" fill-opacity="0.25" filter="url(#graph_blur)"/>
+	    <path id="{p}download_line" d="" fill="none" stroke="#d00" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+	    <path id="{p}download_bridge" d="" fill="#d00"/>
+	  </g>
+	</g>
+	<g class="graph graph_upload" clip-path="url(#{p}clip_panel)">
+	  <linearGradient id="{p}upload_fade" gradientUnits="userSpaceOnUse" x1="100" y1="0" x2="-12" y2="0">
+	    <stop offset="0" stop-color="#fff"/>
+	    <stop offset="0.6" stop-color="#fff" stop-opacity="0.85"/>
+	    <stop offset="1" stop-color="#fff" stop-opacity="0.35"/>
+	  </linearGradient>
+	  <linearGradient id="{p}upload_areafill" x1="0" y1="0" x2="0" y2="1">
+	    <stop offset="0" stop-color="#00d" stop-opacity="0.28"/>
+	    <stop offset="1" stop-color="#00d" stop-opacity="0"/>
+	  </linearGradient>
+	  <mask id="{p}upload_mask" maskUnits="userSpaceOnUse" x="-65" y="0" width="330" height="117">
+	    <rect x="-65" y="0" width="330" height="117" fill="url(#{p}upload_fade)"/>
+	  </mask>
+	  <g mask="url(#{p}upload_mask)">
+	    <path id="{p}upload_area" d="" fill="url(#{p}upload_areafill)"/>
+	    <path id="{p}upload_glow" d="" fill="none" stroke="#00d" stroke-width="3.2" stroke-opacity="0.25" stroke-linecap="round" stroke-linejoin="round" filter="url(#graph_blur)"/>
+	    <path id="{p}upload_glow_bridge" d="" fill="#00d" fill-opacity="0.25" filter="url(#graph_blur)"/>
+	    <path id="{p}upload_line" d="" fill="none" stroke="#00d" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+	    <path id="{p}upload_bridge" d="" fill="#00d"/>
+	  </g>
+	</g>
 	<g id="{p}start_button" class="button" style="cursor: pointer; visibility: hidden;" onclick="onClickStart({n})">
 	  <title>Start Test Now</title>
 	  <circle cx="100" cy="21" r="14" fill="#0c0" />
 	  <path d="M 97 16 l 10 5 l -10 5 z" fill="#fff"/>
 	</g>
-	<g id="{p}stop_button" style="visibility: hidden;">
+	<g id="{p}stop_button" class="graph_hides" style="visibility: hidden;">
 	  <title>Test Is Running</title>
 	  <circle cx="100" cy="21" r="14" fill="#ddd" class="inactive_button_circle"/>
 	  <path d="M 97 16 l 10 5 l -10 5 z" fill="#fff"/>
@@ -548,6 +615,8 @@ function dashboard_set() {
 
 function gauge_set(i, p) {
     if (!p) {
+	set_trace(i, "download", null);
+	set_trace(i, "upload", null);
 	gauge_el(i, "start_button").style.visibility = "hidden";
 	gauge_el(i, "stop_button").style.visibility = "hidden";
 	gauge_el(i, "disconnected_button").style.visibility = "visible";
@@ -567,32 +636,191 @@ function gauge_set(i, p) {
     // anything missing from the state is shown as on a fresh page load, so
     // the gauges after a test look the same as after reloading the page
     gauge_el(i, "idle_latency").textContent = p.latency ? format3(p.latency, "ms") : "";
-    set_speed_gauge(i, "download", 45, p.download_mbps);
+    set_speed_gauge(i, "download", 45, p.download_mbps, p.download_now, p.download_duration);
     set_progress_band(i, "download", 45, p.download_progress);
     gauge_el(i, "download_latency").textContent = p.download_latency ? format3(p.download_latency, "ms") : "";
-    set_speed_gauge(i, "upload", 155, p.upload_mbps);
+    set_speed_gauge(i, "upload", 155, p.upload_mbps, p.upload_now, p.upload_duration);
     set_progress_band(i, "upload", 155, p.upload_progress);
     gauge_el(i, "upload_latency").textContent = p.upload_latency ? format3(p.upload_latency, "ms") : "";
 }
 
-function set_speed_gauge(i, name, cx, mbps) {
+function set_speed_gauge(i, name, cx, mbps, now, duration) {
+    let t = trace(i, name, cx);
+    set_trace(i, name, now, duration);
     if (!mbps) {
 	gauge_el(i, name + "_mbps").textContent = "";
 	gauge_el(i, name + "_unit").textContent = "Mbps";
-	gauge_el(i, name + "_needle").style.visibility = "hidden";
 	gauge_el(i, name + "_speed_band_clip_path").setAttribute("d", "");
-	return;
+	if (now == null) {
+	    t.needle.style.visibility = "hidden";
+	    t.deg = t.target_deg = 0;
+	    return;
+	}
+    } else {
+	gauge_el(i, name + "_mbps").textContent = format3(mbps < 1000 ? mbps : mbps / 1000);
+	gauge_el(i, name + "_unit").textContent = mbps < 1000 ? "Mbps" : "Gbps";
+	gauge_el(i, name + "_speed_band_clip_path").setAttribute("d", "M" + cx + " 50" + degrees_to_clip_path(speed_to_gauge_degrees(mbps)));
     }
-    gauge_el(i, name + "_mbps").textContent = format3(mbps < 1000 ? mbps : mbps / 1000);
-    gauge_el(i, name + "_unit").textContent = mbps < 1000 ? "Mbps" : "Gbps";
-    var deg = speed_to_gauge_degrees(mbps);
-    gauge_el(i, name + "_needle").transform.baseVal[0].setRotate(-135 + deg, cx, 50);
-    gauge_el(i, name + "_needle").style.visibility = "visible";
-    gauge_el(i, name + "_speed_band_clip_path").setAttribute("d", "M" + cx + " 50" + degrees_to_clip_path(deg));
+    let deg = speed_to_gauge_degrees(now != null ? now : mbps);
+    if (t.needle.style.visibility != "visible") {
+	t.deg = now != null ? 0 : deg;
+	t.needle.style.visibility = "visible";
+    }
+    t.target_deg = deg;
+    animate();
+}
+
+// while a direction is tested its needle follows the current speed and the
+// gauge of the other direction gives way to a graph of it, the line comes out
+// of the needle tip and the older speeds slide away from it, the start of the
+// test reaching the far end as the test ends
+const graph_x0 = 100;
+const graph_len = 112;
+const graph_top = 12;
+const graph_bottom = 88;
+var traces = {};
+function trace(i, name, cx) {
+    let key = i + name;
+    if (!traces[key]) {
+	traces[key] = {
+	    i: i, name: name, cx: cx, dir: name == "download" ? 1 : -1,
+	    needle: gauge_el(i, name + "_needle"),
+	    deg: 0, target_deg: 0,
+	    band: gauge_el(i, name + "_progress_band_clip_path"),
+	    progress: 0, target_progress: 0,
+	    active: false, now: null, shown: 0, scale: 0, hist: [], until: 0, seconds: 10,
+	};
+    }
+    return traces[key];
+}
+function set_trace(i, name, now, duration) {
+    let t = trace(i, name, name == "download" ? 45 : 155);
+    let svg = t.needle.ownerSVGElement;
+    if (now != null && !t.active) {
+	t.active = true;
+	t.hist = [];
+	t.shown = now;
+	t.scale = 0;
+	svg.classList.add("graphing_" + name);
+	animate();
+    }
+    if (now == null && t.active) {
+	t.active = false;
+	t.until = performance.now() + 900;
+	svg.classList.remove("graphing_" + name);
+    }
+    t.now = now;
+    if (duration) {
+	t.seconds = duration;
+    }
+}
+var anim_frame = null;
+var anim_last = 0;
+function animate() {
+    if (anim_frame == null) {
+	anim_last = performance.now();
+	anim_frame = requestAnimationFrame(anim_step);
+    }
+}
+function ease(from, to, dt, tau) {
+    return to + (from - to) * Math.exp(-dt / tau);
+}
+function anim_step(ts) {
+    let dt = Math.min(ts - anim_last, 100);
+    anim_last = ts;
+    let more = false;
+    for (let key in traces) {
+	let t = traces[key];
+	if (Math.abs(t.target_deg - t.deg) > 0.05) {
+	    t.deg = ease(t.deg, t.target_deg, dt, 140);
+	    more = true;
+	} else {
+	    t.deg = t.target_deg;
+	}
+	t.needle.transform.baseVal[0].setRotate(-135 + t.deg, t.cx, 50);
+	if (t.progress != t.target_progress) {
+	    t.progress = Math.abs(t.target_progress - t.progress) > 0.05 ? ease(t.progress, t.target_progress, dt, 250) : t.target_progress;
+	    draw_progress(t);
+	    more = true;
+	}
+	if (t.active || ts < t.until) {
+	    draw_trace(t, ts, dt);
+	    more = true;
+	}
+    }
+    anim_frame = more ? requestAnimationFrame(anim_step) : null;
+}
+// the cubic bezier c as a filled outline, its half width grows from w0 at
+// the start to w1 at the end
+function tapered(c, w0, w1) {
+    let left = [], right = [];
+    const n = 24;
+    for (let k = 0; k <= n; k++) {
+	let u = k / n, v = 1 - u;
+	let b = [v * v * v, 3 * v * v * u, 3 * v * u * u, u * u * u];
+	let db = [-3 * v * v, 3 * v * v - 6 * u * v, 6 * u * v - 3 * u * u, 3 * u * u];
+	let px = 0, py = 0, dx = 0, dy = 0;
+	for (let j = 0; j < 4; j++) {
+	    px += b[j] * c[j][0];
+	    py += b[j] * c[j][1];
+	    dx += db[j] * c[j][0];
+	    dy += db[j] * c[j][1];
+	}
+	let len = Math.hypot(dx, dy) || 1;
+	let w = w0 + (w1 - w0) * Math.sqrt(u);
+	let nx = -dy / len * w, ny = dx / len * w;
+	left.push((px + nx).toFixed(2) + " " + (py + ny).toFixed(2));
+	right.push((px - nx).toFixed(2) + " " + (py - ny).toFixed(2));
+    }
+    return "M" + left.join("L") + "L" + right.reverse().join("L") + "Z";
+}
+function draw_trace(t, ts, dt) {
+    if (t.active && t.now != null) {
+	t.shown = ease(t.shown, t.now, dt, 250);
+	let last = t.hist[t.hist.length - 1];
+	if (!last || ts - last.t >= 40) {
+	    t.hist.push({ t: ts, v: t.shown });
+	}
+    }
+    let horizon = ts - (t.seconds + 1) * 1000;
+    while (t.hist.length && t.hist[0].t < horizon) {
+	t.hist.shift();
+    }
+    let top = t.hist.reduce((m, h) => Math.max(m, h.v), t.shown) * 1.15 || 1;
+    t.scale = t.scale ? ease(t.scale, top, dt, 350) : top;
+    let y = v => (graph_bottom - v / t.scale * (graph_bottom - graph_top)).toFixed(2);
+    let x = h => (graph_x0 + t.dir * (ts - h.t) * graph_len / t.seconds / 1000).toFixed(2);
+
+    let a = deg_to_rad(-135 + t.deg);
+    let sin = Math.sin(a), cos = -Math.cos(a);
+    let tip = [t.cx + 38 * sin, 50 + 38 * cos];
+    let head = [graph_x0, y(t.shown)];
+    let ctrl = [tip, [tip[0] + 16 * sin, tip[1] + 16 * cos], [graph_x0 - t.dir * 18, +head[1]], [head[0], +head[1]]];
+    let series = "";
+    for (let k = t.hist.length - 1; k >= 0; k--) {
+	series += "L" + x(t.hist[k]) + " " + y(t.hist[k].v);
+    }
+    let tail = t.hist.length ? x(t.hist[0]) : graph_x0;
+    let area = "M" + head[0] + " " + head[1] + series + "L" + tail + " " + graph_bottom + "L" + graph_x0 + " " + graph_bottom + "Z";
+    gauge_el(t.i, t.name + "_line").setAttribute("d", "M" + head[0] + " " + head[1] + series);
+    gauge_el(t.i, t.name + "_glow").setAttribute("d", "M" + head[0] + " " + head[1] + series);
+    gauge_el(t.i, t.name + "_bridge").setAttribute("d", tapered(ctrl, 0.1, 0.65));
+    gauge_el(t.i, t.name + "_glow_bridge").setAttribute("d", tapered(ctrl, 0.3, 1.6));
+    gauge_el(t.i, t.name + "_area").setAttribute("d", area);
 }
 
 function set_progress_band(i, name, cx, progress) {
-    gauge_el(i, name + "_progress_band_clip_path").setAttribute("d", progress ? "M" + cx + " 50" + degrees_to_clip_path(progress * 270 / 100) : "");
+    let t = trace(i, name, cx);
+    progress = progress || 0;
+    t.target_progress = progress;
+    if (progress < t.progress) {
+	t.progress = progress;
+	draw_progress(t);
+    }
+    animate();
+}
+function draw_progress(t) {
+    t.band.setAttribute("d", t.progress > 0.01 ? "M" + t.cx + " 50" + degrees_to_clip_path(t.progress * 270 / 100) : "");
 }
 
 function onRequest(r) {

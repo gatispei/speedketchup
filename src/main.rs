@@ -201,9 +201,11 @@ struct ProfileState {
     gauge_latency: Option<Duration>,
     gauge_download_progress: Option<u32>,
     gauge_download_mbps: Option<f32>,
+    gauge_download_now: Option<f32>,
     gauge_download_latency: Option<Duration>,
     gauge_upload_progress: Option<u32>,
     gauge_upload_mbps: Option<f32>,
+    gauge_upload_now: Option<f32>,
     gauge_upload_latency: Option<Duration>,
 
     last_result: Option<SpeedTestResult>,
@@ -228,9 +230,11 @@ impl ProfileState {
 	    gauge_latency: None,
 	    gauge_download_progress: None,
 	    gauge_download_mbps: None,
+	    gauge_download_now: None,
 	    gauge_download_latency: None,
 	    gauge_upload_progress: None,
 	    gauge_upload_mbps: None,
+	    gauge_upload_now: None,
 	    gauge_upload_latency: None,
 	    last_result: None,
 	    last_test_time: None,
@@ -1470,7 +1474,7 @@ fn test_multithread<CB>(
     mut cb: CB)
     -> Result<(Option<f32>, Option<Duration>), ErrorString>
 where
-    CB: FnMut(u32, f32, Option<Duration>) -> ()
+    CB: FnMut(u32, f32, Option<f32>, Option<Duration>) -> ()
 {
     let h: String = host_str.to_string();
     let lat_progress = Arc::new(Mutex::new(Option::None));
@@ -1514,11 +1518,20 @@ where
     }).collect();
 
     std::thread::sleep(Duration::from_millis(100));
+    let mut window = std::collections::VecDeque::from([(0u64, 0u64)]);
     while now.elapsed() < duration {
 	let bytes = progress.load(Ordering::Relaxed) as u64;
+	let ms = now.elapsed().as_millis() as u64;
+	let (ms0, bytes0) = window[0];
+	let current = bytes.saturating_sub(bytes0) as f32 * 8.0 / ms.saturating_sub(ms0).max(1) as f32 / 1000.0;
+	window.push_back((ms, bytes));
+	if window.len() > 8 {
+	    window.pop_front();
+	}
 	if let Ok(lat) = lat_progress.lock() {
-	    cb(now.elapsed().as_millis() as u32 * 100 / duration.as_millis() as u32,
-	       (bytes * 8 / now.elapsed().as_millis() as u64) as f32 / 1000.0,
+	    cb(ms as u32 * 100 / duration.as_millis() as u32,
+	       (bytes * 8 / ms.max(1)) as f32 / 1000.0,
+	       Some(current),
 	       *lat);
 	}
 	std::thread::sleep(Duration::from_millis(100));
@@ -1541,7 +1554,7 @@ where
     };
 
     let mbps = (bytes.iter().sum::<usize>() as u64 * 8 / duration.as_millis() as u64) as f32 / 1000.0;
-    cb(100, mbps, latency);
+    cb(100, mbps, None, latency);
     pr!("{test_type} mbps:{mbps} bytes:{:?}", bytes);
     Ok((Some(mbps), latency))
 }
@@ -1729,11 +1742,12 @@ fn speedtest(cfg: &TestProfile, idx: usize, state: &Arc<Mutex<SpeedTestState>>) 
     let mut upload_latency = None;
     if cfg.download_duration > 0 {
 	set_status(state, idx, "test download")?;
-	(download_mbps, download_latency) = test_multithread("download", &server.http_host, net, Duration::from_secs(cfg.download_duration as u64), &download_sizes, cfg.download_connections, test_download, |progress, speed, latency|{
+	(download_mbps, download_latency) = test_multithread("download", &server.http_host, net, Duration::from_secs(cfg.download_duration as u64), &download_sizes, cfg.download_connections, test_download, |progress, speed, current, latency|{
 	    if let Ok(mut state) = state.lock() {
 		if let Some(p) = state.profiles.get_mut(idx) {
 		    p.gauge_download_progress = Some(progress);
 		    p.gauge_download_mbps = Some(speed);
+		    p.gauge_download_now = current;
 		    p.gauge_download_latency = latency;
 		}
 		notify_connections(&state);
@@ -1749,11 +1763,12 @@ fn speedtest(cfg: &TestProfile, idx: usize, state: &Arc<Mutex<SpeedTestState>>) 
 
     if cfg.upload_duration > 0 {
 	set_status(state, idx, "test upload")?;
-	(upload_mbps, upload_latency) = test_multithread("upload", &server.http_host, net, Duration::from_secs(cfg.upload_duration as u64), &upload_sizes, cfg.upload_connections, test_upload, |progress, speed, latency|{
+	(upload_mbps, upload_latency) = test_multithread("upload", &server.http_host, net, Duration::from_secs(cfg.upload_duration as u64), &upload_sizes, cfg.upload_connections, test_upload, |progress, speed, current, latency|{
 	    if let Ok(mut state) = state.lock() {
 		if let Some(p) = state.profiles.get_mut(idx) {
 		    p.gauge_upload_progress = Some(progress);
 		    p.gauge_upload_mbps = Some(speed);
+		    p.gauge_upload_now = current;
 		    p.gauge_upload_latency = latency;
 		}
 		notify_connections(&state);
@@ -2414,7 +2429,8 @@ fn server_get_status(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, Error
     let overall = state.profiles.iter().map(|p| p.status.as_str()).find(|s| *s != "idle").unwrap_or("idle");
     let mut str = format!("{{ \"state\":\"{overall}\", \"profiles\":[");
     for (i, p) in state.profiles.iter().enumerate() {
-	let name = state.config.profiles.get(i).map(|c| c.name.as_str()).unwrap_or("");
+	let cfg = state.config.profiles.get(i);
+	let name = cfg.map(|c| c.name.as_str()).unwrap_or("");
 	str += &format!("{}{{ \"name\":{}, \"state\":\"{}\"", if i > 0 { ", " } else { "" }, json_str(name), p.status);
 	if let Some(x) = p.idle_until {
 	    str += &format!(", \"idle_time\": {}", (x - Instant::now()).as_secs());
@@ -2428,6 +2444,12 @@ fn server_get_status(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, Error
 	if let Some(x) = p.gauge_download_mbps {
 	    str += &format!(", \"download_mbps\": {}", float_to_str(x));
 	}
+	if let Some(x) = p.gauge_download_now {
+	    str += &format!(", \"download_now\": {}", float_to_str(x));
+	    if let Some(c) = cfg {
+		str += &format!(", \"download_duration\": {}", c.download_duration);
+	    }
+	}
 	if let Some(x) = p.gauge_download_latency {
 	    str += &format!(", \"download_latency\": {}", dur_to_str(Some(x)));
 	}
@@ -2436,6 +2458,12 @@ fn server_get_status(state: &Arc<Mutex<SpeedTestState>>) -> Result<String, Error
 	}
 	if let Some(x) = p.gauge_upload_mbps {
 	    str += &format!(", \"upload_mbps\": {}", float_to_str(x));
+	}
+	if let Some(x) = p.gauge_upload_now {
+	    str += &format!(", \"upload_now\": {}", float_to_str(x));
+	    if let Some(c) = cfg {
+		str += &format!(", \"upload_duration\": {}", c.upload_duration);
+	    }
 	}
 	if let Some(x) = p.gauge_upload_latency {
 	    str += &format!(", \"upload_latency\": {}", dur_to_str(Some(x)));
@@ -3355,6 +3383,8 @@ fn run_test(state: &Arc<Mutex<SpeedTestState>>, idx: usize, profile: &TestProfil
 	    p.status = "save result".to_string();
 	    p.gauge_download_progress = None;
 	    p.gauge_upload_progress = None;
+	    p.gauge_download_now = None;
+	    p.gauge_upload_now = None;
 	}
     }
     save_result(&filename, idx + 1, &mut result);
