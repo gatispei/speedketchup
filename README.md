@@ -106,6 +106,7 @@ usage: speedketchup [options]
 		the servers of the system by default, the system resolver if they don't answer that way
 	-ao|--allow-overlapping-tests &ltyes|no&gt: run the tests of different profiles at the same time, no by default
 	-st|--single-test: test every profile once right away and exit, without the web server, 1 if a test failed
+	-so|--server-only: run no tests, only the web server, a speedtest server for other speedketchups' -s
 
 every option can also be given as an environment variable, command line options
 take precedence:
@@ -116,7 +117,8 @@ take precedence:
 	SPEEDKETCHUP_INFLUX_TOKEN, SPEEDKETCHUP_MQTT, SPEEDKETCHUP_MQTT_USER,
 	SPEEDKETCHUP_MQTT_PASSWORD, SPEEDKETCHUP_NAME, SPEEDKETCHUP_INTERFACE,
 	SPEEDKETCHUP_SRC_ADDR, SPEEDKETCHUP_DSCP, SPEEDKETCHUP_DNS_SERVER,
-	SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS, SPEEDKETCHUP_SINGLE_TEST (yes or no)
+	SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS, SPEEDKETCHUP_SINGLE_TEST,
+	SPEEDKETCHUP_SERVER_ONLY (yes or no)
 
 several test profiles, eg one for every wan, are given as comma separated values
 of the name, interval, server, duration, connections, interface, src-addr, dscp

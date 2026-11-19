@@ -181,6 +181,7 @@ struct SpeedTestConfig {
     profiles: Vec<TestProfile>,
     allow_overlapping_tests: bool,
     single_test: bool,
+    server_only: bool,
 
     store_filename: String,
     listen_port: u16,
@@ -2723,6 +2724,7 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 		    return Err("read closed".into());
 		}
 		bytes_read += bytes;
+		now = Instant::now();
 //		pr!("read {bytes_read}");
 	    }
 	}
@@ -2886,6 +2888,7 @@ const HELP: &str = "usage: speedketchup [options]
 		the servers of the system by default, the system resolver if they don't answer that way
 	-ao|--allow-overlapping-tests <yes|no>: run the tests of different profiles at the same time, no by default
 	-st|--single-test: test every profile once right away and exit, without the web server, 1 if a test failed
+	-so|--server-only: run no tests, only the web server, a speedtest server for other speedketchups' -s
 	--tray: windows only, run as the tray icon, as when started from the start menu
 
 every option can also be given as an environment variable, command line options
@@ -2897,7 +2900,8 @@ take precedence:
 	SPEEDKETCHUP_INFLUX_TOKEN, SPEEDKETCHUP_MQTT, SPEEDKETCHUP_MQTT_USER,
 	SPEEDKETCHUP_MQTT_PASSWORD, SPEEDKETCHUP_NAME, SPEEDKETCHUP_INTERFACE,
 	SPEEDKETCHUP_SRC_ADDR, SPEEDKETCHUP_DSCP, SPEEDKETCHUP_DNS_SERVER,
-	SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS, SPEEDKETCHUP_SINGLE_TEST (yes or no)
+	SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS, SPEEDKETCHUP_SINGLE_TEST,
+	SPEEDKETCHUP_SERVER_ONLY (yes or no)
 
 several test profiles, eg one for every wan, are given as comma separated values
 of the name, interval, server, duration, connections, interface, src-addr, dscp
@@ -2978,7 +2982,8 @@ fn config_from_vars(config: &mut SpeedTestConfig, var: &dyn Fn(&str) -> Option<S
     if let Some(x) = var_str(var, "SPEEDKETCHUP_MQTT_USER") { config.mqtt_user = Some(x); }
     if let Some(x) = var_str(var, "SPEEDKETCHUP_MQTT_PASSWORD") { config.mqtt_password = Some(x); }
     for (name, value) in [("SPEEDKETCHUP_ALLOW_OVERLAPPING_TESTS", &mut config.allow_overlapping_tests),
-			  ("SPEEDKETCHUP_SINGLE_TEST", &mut config.single_test)] {
+			  ("SPEEDKETCHUP_SINGLE_TEST", &mut config.single_test),
+			  ("SPEEDKETCHUP_SERVER_ONLY", &mut config.server_only)] {
 	if let Some(x) = var_str(var, name) {
 	    match x.to_ascii_lowercase().as_str() {
 		"yes" | "true" | "on" | "1" => *value = true,
@@ -3095,6 +3100,7 @@ fn parse_args() {
 	    x if x.starts_with("-psn_") => (),
 	    "--login" | "--tray" if cfg!(windows) => (),
 	    "-st" | "--single-test" => vars.push(("SPEEDKETCHUP_SINGLE_TEST".to_string(), "yes".to_string())),
+	    "-so" | "--server-only" => vars.push(("SPEEDKETCHUP_SERVER_ONLY".to_string(), "yes".to_string())),
 	    x => match OPTIONS.iter().find(|(short, long, _)| x == *short || x == *long) {
 		Some((_, _, name)) => match it.next() {
 		    Some(value) => vars.push((name.to_string(), value)),
@@ -3131,6 +3137,7 @@ fn default_config() -> SpeedTestConfig {
 	}],
 	allow_overlapping_tests: false,
 	single_test: false,
+	server_only: false,
 	store_filename: "speedketchup-results.csv".to_string(),
 	listen_port: 8288,
 	listen_address: "127.0.0.1".to_string(),
@@ -3143,6 +3150,9 @@ fn default_config() -> SpeedTestConfig {
 }
 
 fn check_config(config: &SpeedTestConfig) -> Result<(), String> {
+    if config.single_test && config.server_only {
+	return Err("single test and server only exclude each other".to_string());
+    }
     if let Some(url) = &config.influx_url {
 	let proto = url_proto(url);
 	if !proto.eq_ignore_ascii_case(HTTP) {
@@ -3232,13 +3242,14 @@ fn main() {
 	}
     }
     config.single_test &= !app;
+    config.server_only &= !app;
 
     std::env::set_var("RUST_BACKTRACE", "1");
     println!("speedketchup parameters (run with '-h' to see options):");
     println!("{ATTR_GREEN}results file: {ATTR_BOLD}{}{ATTR_RESET}", config.store_filename);
     println!("{ATTR_GREEN}listen address: {ATTR_BOLD}{}:{}{ATTR_RESET}",
 	     config.listen_address, config.listen_port);
-    for (i, p) in config.profiles.iter().enumerate() {
+    for (i, p) in config.profiles.iter().enumerate().filter(|_| !config.server_only) {
 	if config.profiles.len() > 1 {
 	    println!("{ATTR_GREEN}profile {}: {ATTR_BOLD}{}{ATTR_RESET}", i + 1, p.name);
 	}
@@ -3265,8 +3276,11 @@ fn main() {
 	    println!("{ATTR_GREEN}dns server: {ATTR_BOLD}{x}{ATTR_RESET}");
 	}
     }
-    if config.profiles.len() > 1 {
+    if config.profiles.len() > 1 && !config.server_only {
 	println!("{ATTR_GREEN}overlapping tests: {ATTR_BOLD}{}{ATTR_RESET}", if config.allow_overlapping_tests { "yes" } else { "no" });
+    }
+    if config.server_only {
+	println!("{ATTR_GREEN}server only: {ATTR_BOLD}yes{ATTR_RESET}");
     }
     if let Some(url) = &config.influx_url {
 	// leave out the query, it can hold v1 u= and p= credentials
@@ -3318,6 +3332,7 @@ fn main() {
     }
 
     let single_test = config.single_test;
+    let server_only = config.server_only;
     let (tx, rx) = mpsc::channel();
     let state = Arc::new(Mutex::new(SpeedTestState {
 	profiles: config.profiles.iter().map(|_| ProfileState::new()).collect(),
@@ -3345,6 +3360,11 @@ fn main() {
 	ui::watch_settings(state.clone());
 	app::retry_listen(state.clone());
 	ui::run(state);
+    }
+    if server_only {
+	loop {
+	    std::thread::park();
+	}
     }
     test_loop(state, rx);
 }
