@@ -1097,6 +1097,93 @@ where F: FnOnce() -> Vec<std::net::SocketAddr> {
     Ok(addr)
 }
 
+fn http_connect(host: &str, net: &NetOpts, duration: Duration) -> Result<std::net::TcpStream, ErrorString> {
+    let sock_addr = match net_lookup(host, net, dns_servers).map_err(|e| format!("http_request: {e}"))? {
+	Some(addr) => addr,
+	None => {
+	    let mut sock_addrs = match std::net::ToSocketAddrs::to_socket_addrs(host) {
+		Ok(x) => x,
+		Err(_) => std::net::ToSocketAddrs::to_socket_addrs(&(host, 80))
+		    .map_err(|e| format!("http_request: to_socket_addrs {e}"))?
+	    };
+	    // a source address only reaches addresses of its own family
+	    sock_addrs.find(|a| net.src_addr.map(|s| s.is_ipv4() == a.is_ipv4()).unwrap_or(true))
+		.ok_or("htpp_request: no addr")?
+	},
+    };
+    let tcp_stream = tcp_connect(&sock_addr, net, duration)
+	.map_err(|e| format!("http_request: connect {e}"))?;
+    tcp_stream.set_nonblocking(true)?;
+    Ok(tcp_stream)
+}
+
+// the request and send_data_size bytes of post data, write_cb counts the post
+// data as it goes out
+fn http_send<WRITE>(
+    tcp_stream: &mut std::net::TcpStream,
+    req: &str,
+    now: Instant,
+    duration: Duration,
+    send_data_size: usize,
+    write_cb: &mut Option<WRITE>)
+    -> Result<(), ErrorString>
+where
+    WRITE: FnMut(usize) -> ()
+{
+    let timeout = duration.checked_sub(now.elapsed())
+	.ok_or("http_request: connect too long")?;
+    let mut bytes_written = 0;
+    while bytes_written < req.as_bytes().len() {
+	wait_socket(&tcp_stream, timeout, WaitSocketOp::Write)
+	    .map_err(|e| format!("http_request: wait_socket to send request {e}"))?;
+	bytes_written += match std::io::Write::write(tcp_stream, &req.as_bytes()[bytes_written..]) {
+	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => 0,
+	    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
+	    Err(err) => return Err(format!("http_request: send request: {err}").into()),
+	    Ok(ret) => {
+		if ret == 0 {
+		    return Err("http_request: send request: closed".into());
+		}
+		ret
+	    }
+	}
+    }
+
+    let buf = [0_u8; 1024 * 8];
+    bytes_written = 0;
+    while bytes_written < send_data_size {
+	let timeout = duration.checked_sub(now.elapsed())
+	    .ok_or("http_request: send post data: timeout")?;
+	wait_socket(&tcp_stream, timeout, WaitSocketOp::Write)
+	    .map_err(|e| format!("http_request: wait_socket to send post data {e}"))?;
+	let remain = (send_data_size - bytes_written).min(buf.len());
+	match std::io::Write::write(tcp_stream, &buf[0..remain]) {
+	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+	    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+	    Err(err) => return Err(format!("http_request: send post data: {err}").into()),
+	    Ok(ret) => {
+		if ret == 0 {
+		    return Err("http_request: send post data: closed".into());
+		}
+		bytes_written += ret;
+		if let Some(ref mut cb) = write_cb {
+		    cb(ret);
+		}
+	    }
+	}
+    }
+    Ok(())
+}
+
+fn http_request_header(method: &str, host: &str, path: &str, close: bool, extra_headers: &str) -> String {
+    format!("{method} {path} HTTP/1.1\r
+Host: {host}\r
+User-Agent: {PKG_NAME}/{PKG_VERSION}\r
+Accept: */*\r
+{}{extra_headers}\r
+", if close { "Connection: close\r\n" } else { "" })
+}
+
 //#[inline(never)]
 fn http_request<READ, WRITE>(
     host: &str,
@@ -1115,88 +1202,13 @@ where
     WRITE: FnMut(usize) -> ()
 {
     let now = Instant::now();
-    let sock_addr = match net_lookup(host, net, dns_servers).map_err(|e| format!("http_request: {e}"))? {
-	Some(addr) => addr,
-	None => {
-	    let mut sock_addrs = match std::net::ToSocketAddrs::to_socket_addrs(host) {
-		Ok(x) => x,
-		Err(_) => std::net::ToSocketAddrs::to_socket_addrs(&(host, 80))
-		    .map_err(|e| format!("http_request: to_socket_addrs {e}"))?
-	    };
-	    // a source address only reaches addresses of its own family
-	    sock_addrs.find(|a| net.src_addr.map(|s| s.is_ipv4() == a.is_ipv4()).unwrap_or(true))
-		.ok_or("htpp_request: no addr")?
-	},
-    };
-//    pr!("http_request {host} {path} {method} {sock_addr} {:?} {send_data_size}", duration);
-    let mut tcp_stream = tcp_connect(&sock_addr, net, duration)
-	.map_err(|e| format!("http_request: connect {e}"))?;
-    tcp_stream.set_nonblocking(true)?;
+    let mut tcp_stream = http_connect(host, net, duration)?;
+    let req = http_request_header(method, host, path, true, extra_headers) + body;
+    http_send(&mut tcp_stream, &req, now, duration, send_data_size, &mut write_cb)?;
 
-    let mut timeout = duration.checked_sub(now.elapsed())
-	.ok_or("http_request: connect too long")?;
-//    pr!("connect done");
-    let req = format!("{method} {path} HTTP/1.1\r
-Host: {host}\r
-User-Agent: {PKG_NAME}/{PKG_VERSION}\r
-Accept: */*\r
-Connection: close\r
-{extra_headers}\r
-{body}");
-
-    // send request
-    let mut bytes_written = 0;
-    while bytes_written < req.as_bytes().len() {
-	wait_socket(&tcp_stream, timeout, WaitSocketOp::Write)
-	    .map_err(|e| format!("http_request: wait_socket to send request {e}"))?;
-	bytes_written += match std::io::Write::write(&mut tcp_stream, &req.as_bytes()[bytes_written..]) {
-	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => 0,
-	    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
-	    Err(err) => return Err(format!("http_request: send request: {err}").into()),
-	    Ok(ret) => {
-		if ret == 0 {
-		    return Err("http_request: send request: closed".into());
-		}
-		ret
-	    }
-	}
-    }
-
-//    pr!("write request done");
     let mut buf = [0_u8; 1024 * 8];
-    bytes_written = 0;
-
-    // send post data
-    while bytes_written < send_data_size {
-	timeout = duration.checked_sub(now.elapsed())
-	    .ok_or("http_request: send post data: timeout")?;
-	wait_socket(&tcp_stream, timeout, WaitSocketOp::Write)
-	    .map_err(|e| format!("http_request: wait_socket to send post data {e}"))?;
-	let mut remain = send_data_size - bytes_written;
-	if remain > buf.len() {
-	    remain = buf.len();
-	}
-	match std::io::Write::write(&mut tcp_stream, &buf[0..remain]) {
-	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-	    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-	    Err(err) => return Err(format!("http_request: send post data: {err}").into()),
-	    Ok(ret) => {
-		if ret == 0 {
-		    return Err("http_request: send post data: closed".into());
-		}
-//		pr!("write {ret}");
-		bytes_written += ret;
-		if let Some(ref mut cb) = write_cb {
-		    cb(ret);
-		}
-	    }
-	}
-    }
-//    pr!("write post data done");
-
-    // receive response
     loop {
-	timeout = duration.checked_sub(now.elapsed()).ok_or("http_request: receive response timeout")?;
+	let timeout = duration.checked_sub(now.elapsed()).ok_or("http_request: receive response timeout")?;
 	wait_socket(&tcp_stream, timeout, WaitSocketOp::Read)
 	    .map_err(|e| format!("http_request: wait_socket to receive response {e}"))?;
 	match std::io::Read::read(&mut tcp_stream, &mut buf) {
@@ -1223,6 +1235,109 @@ Connection: close\r
 	}
     }
 //    pr!("read");
+    Ok(())
+}
+
+// a connection the server has closed or sent something unasked on can't take
+// the next request
+fn http_conn_usable(stream: &std::net::TcpStream) -> bool {
+    match stream.peek(&mut [0_u8; 1]) {
+	Err(e) => e.kind() == std::io::ErrorKind::WouldBlock,
+	Ok(_) => false,
+    }
+}
+
+// a request on the connection in conn, a new one without it, left in conn for
+// the next request while the server keeps it open. The response ends at its
+// Content-Length, without one when the server closes the connection
+fn http_request_kept<READ, WRITE>(
+    conn: &mut Option<std::net::TcpStream>,
+    host: &str,
+    net: &NetOpts,
+    path: &str,
+    method: &str,
+    extra_headers: &str,
+    duration: Duration,
+    send_data_size: usize,
+    mut read_cb: READ,
+    write_cb: WRITE)
+    -> Result<(), ErrorString>
+where
+    READ: FnMut(&[u8]) -> (),
+    WRITE: FnMut(usize) -> ()
+{
+    let now = Instant::now();
+    let mut tcp_stream = match conn.take().filter(http_conn_usable) {
+	Some(s) => s,
+	None => http_connect(host, net, duration)?,
+    };
+    let req = http_request_header(method, host, path, false, extra_headers);
+    http_send(&mut tcp_stream, &req, now, duration, send_data_size, &mut Some(write_cb))?;
+
+    let mut buf = [0_u8; 1024 * 8];
+    let mut head: Vec<u8> = Vec::new();
+    // body bytes still to come, None until the header is in, usize::MAX until
+    // the server closes
+    let mut left: Option<usize> = None;
+    let mut keep = true;
+    loop {
+	let timeout = duration.checked_sub(now.elapsed()).ok_or("http_request: receive response timeout")?;
+	wait_socket(&tcp_stream, timeout, WaitSocketOp::Read)
+	    .map_err(|e| format!("http_request: wait_socket to receive response {e}"))?;
+	let n = match std::io::Read::read(&mut tcp_stream, &mut buf) {
+	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+	    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+	    Err(e) => return Err(format!("http_request: receive response: {e}").into()),
+	    Ok(0) if left == Some(usize::MAX) => return Ok(()),
+	    Ok(0) => return Err("http_request: receive response: closed".into()),
+	    Ok(n) => n,
+	};
+	read_cb(&buf[0..n]);
+	let mut body = n;
+	if left.is_none() {
+	    head.extend_from_slice(&buf[0..n]);
+	    let end = match memmem(&head, b"\r\n\r\n") {
+		None if head.len() > 65536 => return Err("http_request: response header too long".into()),
+		None => continue,
+		Some(i) => i + 4,
+	    };
+	    let mut length = None;
+	    let mut encoded = false;
+	    http_headers(&head[0..end], |hdr_type, hdr_val| {
+		let hdr_type = hdr_type.to_ascii_lowercase();
+		let hdr_val = hdr_val.to_ascii_lowercase();
+		if hdr_type == b"content-length" {
+		    length = std::str::from_utf8(&hdr_val).ok().and_then(|x| x.parse::<usize>().ok());
+		} else if hdr_type == b"connection" && hdr_val == b"close" {
+		    keep = false;
+		} else if hdr_type == b"transfer-encoding" {
+		    encoded = true;
+		}
+	    });
+	    if encoded {
+		length = None;
+	    }
+	    if head.starts_with(b"HTTP/1.0") || length.is_none() {
+		keep = false;
+	    }
+	    left = Some(length.unwrap_or(usize::MAX));
+	    body = head.len() - end;
+	}
+	let l = left.unwrap_or(0);
+	if l == usize::MAX {
+	    continue;
+	}
+	if body > l {
+	    keep = false;
+	}
+	left = Some(l.saturating_sub(body));
+	if left == Some(0) {
+	    break;
+	}
+    }
+    if keep {
+	*conn = Some(tcp_stream);
+    }
     Ok(())
 }
 
@@ -1408,6 +1523,7 @@ fn test_download(host_str: &str, net: &NetOpts, duration: Duration, sizes: &Vec<
     let mut bytes = 0;
     let now = Instant::now();
     let mut i = 0;
+    let mut conn = None;
     loop {
 	let timeout = duration.checked_sub(now.elapsed());
 //	pr!("download timeout: {:?}", timeout);
@@ -1417,11 +1533,10 @@ fn test_download(host_str: &str, net: &NetOpts, duration: Duration, sizes: &Vec<
 	    Some(t) => {
 		let size = sizes[i];
 		let path = format!("/speedtest/random{size}x{size}.jpg");
-		match http_request(host_str, net, &path, "GET", "Cache-Control: no-cache\r\n", "", t, 0, Some(|buf: &[u8]| {
+		match http_request_kept(&mut conn, host_str, net, &path, "GET", "Cache-Control: no-cache\r\n", t, 0, |buf: &[u8]| {
 		    progress.fetch_add(buf.len(), Ordering::Relaxed);
 		    bytes += buf.len();
-		    true
-		}), None::<fn(usize)>) {
+		}, |_| ()) {
 		    Err(err) => pr!("download {path}: {err}"),
 		    Ok(_) => ()
 		}
@@ -1438,6 +1553,7 @@ fn test_upload(host_str: &str, net: &NetOpts, duration: Duration, sizes: &Vec<u3
     let mut bytes = 0;
     let now = Instant::now();
     let mut i = 0;
+    let mut conn = None;
     loop {
 	let timeout = duration.checked_sub(now.elapsed());
 //	pr!("upload timeout: {:?}", timeout);
@@ -1447,10 +1563,10 @@ fn test_upload(host_str: &str, net: &NetOpts, duration: Duration, sizes: &Vec<u3
 	    Some(t) => {
 		let size = sizes[i];
 		let path = "/speedtest/upload.php";
-		match http_request(host_str, net, &path, "POST", &format!("Content-Length: {size}\r\n"), "", t, size as usize, None::<fn(&[u8]) -> bool>, Some(|b: usize| {
+		match http_request_kept(&mut conn, host_str, net, &path, "POST", &format!("Content-Length: {size}\r\n"), t, size as usize, |_: &[u8]| (), |b: usize| {
 		    progress.fetch_add(b, Ordering::Relaxed);
 		    bytes += b;
-		})) {
+		}) {
 		    Err(err) => {
 			pr!("upload {size}: {err}");
 		    }
@@ -4082,6 +4198,68 @@ mod tests {
 	assert_eq!(servers, ["1.1.1.1:53", "", "[2001:4860:4860::8888]:5353", "[2001:4860:4860::8844]:53", "9.9.9.9:5353"].map(|a| (a != "").then(|| a.to_string())).to_vec());
 	let mut config = default_config();
 	assert!(config_from_vars(&mut config, &|name: &str| (name == "SPEEDKETCHUP_DNS_SERVER").then(|| "dns.example.com".to_string())).is_err());
+    }
+
+    #[test]
+    fn kept_connections_carry_downloads_and_uploads() {
+	let (c, _) = config(&[]);
+	let state = test_state(c);
+	let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+	let host = listener.local_addr().unwrap().to_string();
+	let accepted = Arc::new(AtomicUsize::new(0));
+	let a = accepted.clone();
+	std::thread::spawn(move || for stream in listener.incoming() {
+	    a.fetch_add(1, Ordering::Relaxed);
+	    let s = state.clone();
+	    std::thread::spawn(move || server_connection(stream.unwrap(), &s, mpsc::channel().1));
+	});
+	let net = NetOpts::default();
+	let mut conn = None;
+	let mut got = 0;
+	for _ in 0..3 {
+	    http_request_kept(&mut conn, &host, &net, "/speedtest/random350x350.jpg", "GET", "", Duration::from_secs(5), 0, |b: &[u8]| got += b.len(), |_| ()).unwrap_or_else(|e| panic!("{e}"));
+	}
+	let mut sent = 0;
+	for _ in 0..3 {
+	    http_request_kept(&mut conn, &host, &net, "/speedtest/upload.php", "POST", "Content-Length: 100000\r\n", Duration::from_secs(5), 100000, |_: &[u8]| (), |b| sent += b).unwrap_or_else(|e| panic!("{e}"));
+	}
+	assert!(conn.is_some());
+	assert_eq!(accepted.load(Ordering::Relaxed), 1);
+	assert!(got > 3 * 245388 && got < 3 * (245388 + 200), "{got}");
+	assert_eq!(sent, 300000);
+    }
+
+    #[test]
+    fn kept_connections_end_when_the_server_ends_them() {
+	for response in ["HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\nok",
+			 "HTTP/1.1 200 OK\r\n\r\nok",
+			 "HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok"] {
+	    let (host, rx) = fake_http_server(response);
+	    let mut conn = None;
+	    for _ in 0..2 {
+		let mut got = Vec::new();
+		http_request_kept(&mut conn, &host, &NetOpts::default(), "/x", "GET", "", Duration::from_secs(5), 0, |b: &[u8]| got.extend_from_slice(b), |_| ()).unwrap_or_else(|e| panic!("{e}"));
+		assert!(got.ends_with(b"\r\n\r\nok"), "{response}");
+		assert!(conn.is_none(), "{response}");
+	    }
+	    for _ in 0..2 {
+		let req = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+		assert!(!req.to_ascii_lowercase().contains("connection:"), "{req}");
+	    }
+	}
+    }
+
+    #[test]
+    fn kept_connections_the_server_closed_are_not_used_again() {
+	let (host, rx) = fake_http_server("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+	let mut conn = None;
+	for _ in 0..2 {
+	    http_request_kept(&mut conn, &host, &NetOpts::default(), "/x", "GET", "", Duration::from_secs(5), 0, |_: &[u8]| (), |_| ()).unwrap_or_else(|e| panic!("{e}"));
+	    assert!(conn.is_some());
+	    std::thread::sleep(Duration::from_millis(100));
+	}
+	assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok());
+	assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok());
     }
 
     #[test]
