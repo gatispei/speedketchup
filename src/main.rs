@@ -1519,31 +1519,122 @@ fn upload_sizes(ratio: usize) -> Result<Vec<u32>, ErrorString> {
     }
 }
 
+const DOWNLOAD_QUEUE: usize = 4;
+
+fn download_queued<COUNT>(
+    host: &str,
+    net: &NetOpts,
+    start: Instant,
+    duration: Duration,
+    sizes: &[u32],
+    i: &mut usize,
+    count: &mut COUNT)
+    -> Result<(), ErrorString>
+where
+    COUNT: FnMut(usize) -> ()
+{
+    let t = duration.checked_sub(start.elapsed()).ok_or("download: connect too late")?;
+    let mut tcp_stream = http_connect(host, net, t)?;
+    let mut queued = 0;
+    let mut last = false;
+    let mut left: Option<usize> = None;
+    let mut pend: Vec<u8> = Vec::new();
+    let mut buf = [0_u8; 1024 * 64];
+    loop {
+	let t = match duration.checked_sub(start.elapsed()) {
+	    Some(t) if t >= Duration::from_millis(1) => t,
+	    _ => return Ok(()),
+	};
+	while queued < DOWNLOAD_QUEUE && !last {
+	    let size = sizes[*i];
+	    let req = http_request_header("GET", host, &format!("/speedtest/random{size}x{size}.jpg"), false, "Cache-Control: no-cache\r\n");
+	    http_send(&mut tcp_stream, &req, start, duration, 0, &mut None::<fn(usize)>)?;
+	    queued += 1;
+	    if *i < sizes.len() - 1 {
+		*i += 1;
+	    }
+	}
+	match wait_socket(&tcp_stream, t, WaitSocketOp::Read) {
+	    Err(_) if duration.saturating_sub(start.elapsed()) < Duration::from_millis(2) => return Ok(()),
+	    Err(e) => return Err(format!("download: wait_socket to receive response {e}").into()),
+	    Ok(()) => (),
+	}
+	let n = match std::io::Read::read(&mut tcp_stream, &mut buf) {
+	    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+	    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+	    Err(e) => return Err(format!("download: receive response: {e}").into()),
+	    Ok(0) if left == Some(usize::MAX) => return Ok(()),
+	    Ok(0) => return Err("download: receive response: closed".into()),
+	    Ok(n) => n,
+	};
+	count(n);
+	pend.extend_from_slice(&buf[0..n]);
+	let mut p = 0;
+	loop {
+	    match left {
+		Some(usize::MAX) => {
+		    p = pend.len();
+		    break;
+		}
+		Some(l) => {
+		    let take = l.min(pend.len() - p);
+		    p += take;
+		    if take < l {
+			left = Some(l - take);
+			break;
+		    }
+		    left = None;
+		    queued -= 1;
+		    if last {
+			return Ok(());
+		    }
+		}
+		None => {
+		    let end = match memmem(&pend[p..], b"\r\n\r\n") {
+			None if pend.len() - p > 65536 => return Err("download: response header too long".into()),
+			None => break,
+			Some(e) => p + e + 4,
+		    };
+		    let mut length = None;
+		    let mut keep = !pend[p..].starts_with(b"HTTP/1.0");
+		    http_headers(&pend[p..end], |hdr_type, hdr_val| {
+			let hdr_type = hdr_type.to_ascii_lowercase();
+			let hdr_val = hdr_val.to_ascii_lowercase();
+			if hdr_type == b"content-length" {
+			    length = std::str::from_utf8(&hdr_val).ok().and_then(|x| x.parse::<usize>().ok());
+			} else if hdr_type == b"connection" && hdr_val == b"close" {
+			    keep = false;
+			} else if hdr_type == b"transfer-encoding" {
+			    length = Some(usize::MAX);
+			}
+		    });
+		    let length = match length {
+			Some(usize::MAX) | None => {
+			    keep = false;
+			    usize::MAX
+			},
+			Some(l) => l,
+		    };
+		    last |= !keep;
+		    left = Some(length);
+		    p = end;
+		}
+	    }
+	}
+	pend.drain(0..p);
+    }
+}
+
 fn test_download(host_str: &str, net: &NetOpts, duration: Duration, sizes: &Vec<u32>, progress: &Arc<AtomicUsize>) -> Result<usize, ErrorString> {
     let mut bytes = 0;
     let now = Instant::now();
     let mut i = 0;
-    let mut conn = None;
-    loop {
-	let timeout = duration.checked_sub(now.elapsed());
-//	pr!("download timeout: {:?}", timeout);
-	match timeout {
-	    None => break,
-	    Some(t) if t < Duration::from_millis(1) => break,
-	    Some(t) => {
-		let size = sizes[i];
-		let path = format!("/speedtest/random{size}x{size}.jpg");
-		match http_request_kept(&mut conn, host_str, net, &path, "GET", "Cache-Control: no-cache\r\n", t, 0, |buf: &[u8]| {
-		    progress.fetch_add(buf.len(), Ordering::Relaxed);
-		    bytes += buf.len();
-		}, |_| ()) {
-		    Err(err) => pr!("download {path}: {err}"),
-		    Ok(_) => ()
-		}
-	    }
-	}
-	if i < sizes.len() - 1 {
-	    i += 1;
+    while duration.checked_sub(now.elapsed()).is_some_and(|t| t >= Duration::from_millis(1)) {
+	if let Err(err) = download_queued(host_str, net, now, duration, sizes, &mut i, &mut |n: usize| {
+	    progress.fetch_add(n, Ordering::Relaxed);
+	    bytes += n;
+	}) {
+	    pr!("{err}");
 	}
     }
     Ok(bytes)
@@ -2844,27 +2935,31 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 //		pr!("read {bytes_read}");
 	    }
 	}
-	if hdrend_off == 0 {
-	    if let Some(off) = memmem(&buf[0..bytes_read.min(buf.len())], b"\r\n\r\n") {
-		hdrend_off = off;
-		let hdr = &buf[0..hdrend_off + 2];
-//		pr!("request: {}", std::str::from_utf8(hdr).unwrap());
-		http_headers(hdr, |hdr_type, hdr_val| {
-//		    pr!("hdr: {}", std::str::from_utf8(hdr_type).unwrap());
-		    if hdr_type.to_ascii_lowercase() == b"connection" && hdr_val.to_ascii_lowercase() == b"close" {
-			close = true;
-		    }
-		    if hdr_type.to_ascii_lowercase() == b"content-length" {
-			content_length = std::str::from_utf8(hdr_val).unwrap_or_default().parse().unwrap_or_default();
-		    }
-		});
-		hdrend_off += 4;
+	loop {
+	    if hdrend_off == 0 {
+		if let Some(off) = memmem(&buf[0..bytes_read.min(buf.len())], b"\r\n\r\n") {
+		    hdrend_off = off;
+		    let hdr = &buf[0..hdrend_off + 2];
+		    http_headers(hdr, |hdr_type, hdr_val| {
+			if hdr_type.to_ascii_lowercase() == b"connection" && hdr_val.to_ascii_lowercase() == b"close" {
+			    close = true;
+			}
+			if hdr_type.to_ascii_lowercase() == b"content-length" {
+			    content_length = std::str::from_utf8(hdr_val).unwrap_or_default().parse().unwrap_or_default();
+			}
+		    });
+		    hdrend_off += 4;
+		}
+		else if bytes_read >= buf.len() {
+		    return Err("request header too long".into());
+		}
+		else {
+		    break;
+		}
 	    }
-	    else if bytes_read >= buf.len() {
-		return Err("request header too long".into());
+	    if bytes_read < hdrend_off.saturating_add(content_length) {
+		break;
 	    }
-	}
-	if hdrend_off != 0 && bytes_read >= hdrend_off.saturating_add(content_length) {
 	    let hdr = &buf[0..hdrend_off];
 	    let content = &buf[hdrend_off..std::cmp::min(hdrend_off + content_length, buf.len())];
 	    let mut iter = hdr.split(|c| *c == b' ');
@@ -2878,12 +2973,15 @@ fn server_connection(mut stream: std::net::TcpStream, state: &Arc<Mutex<SpeedTes
 		_ => return Err("bad request method".into()),
 	    }
 	    if close == true {
-		break;
+		pr!("close connection");
+		return Ok(());
 	    }
 
-	    if hdrend_off + content_length < buf.len() {
-		buf.copy_within((hdrend_off + content_length)..bytes_read, 0);
-		bytes_read -= hdrend_off + content_length;
+	    let used = hdrend_off + content_length;
+	    let have = bytes_read.min(buf.len());
+	    if used < have {
+		buf.copy_within(used..have, 0);
+		bytes_read = have - used;
 	    }
 	    else {
 		bytes_read = 0;
