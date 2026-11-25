@@ -24,14 +24,14 @@ Prebuilt executables for some platforms:
 
 | platform | executable | [upx](https://upx.github.io/)-compressed executable | app store |
 |-|-|-|-|
-|linux x86_64|[510k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64)|[221k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64-upx)|
-|linux i686|[496k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-i686)|[227k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-i686-upx)|
-|linux aarch64|[526k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-aarch64)|[211k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-aarch64-upx)|
-|linux arm|[492k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-arm)|[219k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-arm-upx)|
-|linux mips|[658k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mips)|[250k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mips-upx)|
-|linux mipsel|[658k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mipsel)|[254k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mipsel-upx)|
-|windows x86_64|[557k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64.exe)|[261k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64-upx.exe)|[Microsoft Store](https://apps.microsoft.com/detail/9P0J5WV54WXH)|
-|macos app, universal (x86_64 + aarch64)|[758k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/SpeedKetchup-macos.zip)||[Mac App Store](https://apps.apple.com/app/id6826614854)|
+|linux x86_64|[518k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64)|[225k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64-upx)|
+|linux i686|[500k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-i686)|[230k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-i686-upx)|
+|linux aarch64|[526k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-aarch64)|[213k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-aarch64-upx)|
+|linux arm|[497k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-arm)|[221k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-arm-upx)|
+|linux mips|[658k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mips)|[253k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mips-upx)|
+|linux mipsel|[658k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mipsel)|[257k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-mipsel-upx)|
+|windows x86_64|[565k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64.exe)|[264k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/speedketchup-x64-upx.exe)|[Microsoft Store](https://apps.microsoft.com/detail/9P0J5WV54WXH)|
+|macos app, universal (x86_64 + aarch64)|[762k](https://raw.githubusercontent.com/gatispei/speedketchup-files/main/bin/SpeedKetchup-macos.zip)||[Mac App Store](https://apps.apple.com/app/id6826614854)|
 
 ### Builtin web server
 <picture>
